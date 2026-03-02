@@ -247,8 +247,8 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
 
         // Initier connexion avec chaque participant existant
         normalized.forEach((participant) => {
-          if (participant.sid !== socket.id && stream) {
-            createPeer(participant.sid, true, stream);
+          if (participant.sid !== socket.id) {
+            createPeer(participant.sid, true, stream || null);
           }
         });
       }
@@ -428,8 +428,8 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
       console.log(`👤 Rejoint : ${name}`);
       setParticipants(normalizeParticipants(p || []));
 
-      if (localStreamRef.current && userId !== socket.id) {
-        createPeer(userId, false, localStreamRef.current);
+      if (userId !== socket.id) {
+        createPeer(userId, false, localStreamRef.current || null);
       }
     };
 

@@ -416,6 +416,7 @@ const Room = () => {
     unreadCount,
     typingText,
     isLoading:        isChatLoading,
+    chatError,
     groupedMessages,
     messagesEndRef,
     inputRef,
@@ -892,6 +893,7 @@ const Room = () => {
               unreadCount={unreadCount}
               typingText={typingText}
               isLoading={isChatLoading}
+              chatError={chatError}
               messagesEndRef={messagesEndRef}
               inputRef={inputRef}
               currentUser={user}

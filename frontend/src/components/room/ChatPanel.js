@@ -254,8 +254,11 @@ const ChatInput = ({
     e?.preventDefault();
     const text = value.trim();
     if (!text || disabled) return;
-    onSendMessage(text);
-    setValue('');
+    const sent = onSendMessage?.(text);
+    // Ne vide pas le champ si l'envoi a echoue (ex: socket deconnecte)
+    if (sent !== false) {
+      setValue('');
+    }
   }, [value, disabled, onSendMessage]);
 
   // ✅ handleKeyDown dépend de handleSubmit stabilisé
@@ -412,6 +415,7 @@ const ChatPanel = ({
   unreadCount     = 0,
   typingText      = null,
   isLoading       = false,
+  chatError       = null,
   messagesEndRef,
   inputRef,
   currentUser,
@@ -621,6 +625,12 @@ const ChatPanel = ({
           bg-ci-gray-900/80
         ">
           <TypingIndicator text={typingText} />
+        </div>
+      )}
+
+      {chatError && (
+        <div className="px-3 py-2 border-t border-red-500/30 bg-red-900/20">
+          <p className="text-red-300 text-xs">{chatError}</p>
         </div>
       )}
 
