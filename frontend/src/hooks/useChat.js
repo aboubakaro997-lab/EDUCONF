@@ -100,11 +100,12 @@ const useChat = (socket, roomId, currentUser) => {
       setChatError('❌ Connexion perdue — message non envoyé');
       return false;
     }
+    setChatError(null);
 
     const message = {
       id:        generateMessageId(),
       text:      text.trim(),
-      sender:    currentUser?.username || currentUser || 'Moi',
+      sender:    currentUser?.full_name || currentUser?.username || 'Moi',
       senderId:  socket.id,
       roomId,
       timestamp: new Date().toISOString(),

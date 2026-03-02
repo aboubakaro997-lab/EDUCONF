@@ -218,6 +218,28 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
 
   }, [socket, roomId, removePeer]);
 
+  const ensurePeerConnections = useCallback((stream = null) => {
+    if (!socket?.id || !Array.isArray(participants)) return;
+
+    participants.forEach((p) => {
+      if (!p?.sid || p.sid === socket.id) return;
+      if (!peersRef.current[p.sid]) {
+        createPeer(p.sid, true, stream || localStreamRef.current || null);
+      }
+    });
+  }, [socket?.id, participants, createPeer]);
+
+  const refreshAllPeerConnections = useCallback((stream = null) => {
+    if (!socket?.id || !Array.isArray(participants)) return;
+
+    const effectiveStream = stream || localStreamRef.current || null;
+    participants.forEach((p) => {
+      if (!p?.sid || p.sid === socket.id) return;
+      removePeer(p.sid);
+      createPeer(p.sid, true, effectiveStream);
+    });
+  }, [socket?.id, participants, removePeer, createPeer]);
+
   // ============================================================
   //  4. REJOINDRE LA SALLE
   // ============================================================
@@ -251,9 +273,10 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
             createPeer(participant.sid, true, stream || null);
           }
         });
+        setTimeout(() => ensurePeerConnections(stream || null), 250);
       }
     });
-  }, [socket, roomId, userName, userId, initLocalStream, createPeer, normalizeParticipants]);
+  }, [socket, roomId, userName, userId, initLocalStream, createPeer, normalizeParticipants, ensurePeerConnections]);
 
   // ============================================================
   //  5. QUITTER LA SALLE
@@ -306,6 +329,8 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
         setIsAudioEnabled(true);
         setMediaError(null);
         addTrackToPeers(audioTrack);
+        ensurePeerConnections(localStreamRef.current);
+        setTimeout(() => refreshAllPeerConnections(localStreamRef.current), 200);
         console.log('🎤 Piste audio ajoutée dynamiquement');
       } catch (err) {
         setMediaError(getMediaErrorMessage(err));
@@ -323,7 +348,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
       audio: audioTrack.enabled,
       video: isVideoEnabled
     });
-  }, [socket, roomId, isVideoEnabled, addTrackToPeers]);
+  }, [socket, roomId, isVideoEnabled, addTrackToPeers, ensurePeerConnections, refreshAllPeerConnections]);
 
   // ============================================================
   //  7. TOGGLE VIDÉO
@@ -347,6 +372,8 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
         setIsVideoEnabled(true);
         setMediaError(null);
         addTrackToPeers(videoTrack);
+        ensurePeerConnections(localStreamRef.current);
+        setTimeout(() => refreshAllPeerConnections(localStreamRef.current), 200);
         console.log('📷 Piste vidéo ajoutée dynamiquement');
       } catch (err) {
         setMediaError(getMediaErrorMessage(err));
@@ -364,7 +391,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
       audio: isAudioEnabled,
       video: videoTrack.enabled
     });
-  }, [socket, roomId, isAudioEnabled, addTrackToPeers]);
+  }, [socket, roomId, isAudioEnabled, addTrackToPeers, ensurePeerConnections, refreshAllPeerConnections]);
 
   // ============================================================
   //  8. PARTAGE D'ÉCRAN  ✅ Corrigé (boucle infinie résolue)
@@ -430,6 +457,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
 
       if (userId !== socket.id) {
         createPeer(userId, false, localStreamRef.current || null);
+        setTimeout(() => ensurePeerConnections(localStreamRef.current || null), 150);
       }
     };
 
@@ -484,7 +512,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
       socket.off('ice_candidate',      onIceCandidate);
       socket.off('media_state_change', onMediaStateChange);
     };
-  }, [socket, createPeer, removePeer, normalizeParticipants]);
+  }, [socket, createPeer, removePeer, normalizeParticipants, ensurePeerConnections]);
 
   // ── Nettoyage destruction du composant ──
   useEffect(() => {
