@@ -243,6 +243,12 @@ export const roomService = {
     return response.data;
   },
 
+  /** Rejoindre une salle via code → POST /api/rooms/join/:code */
+  joinRoomByCode: async (roomCode) => {
+    const response = await api.post(`/rooms/join/${roomCode}`);
+    return response.data;
+  },
+
   /** Quitter une salle → POST /api/rooms/:id/leave */
   leaveRoom: async (roomId) => {
     const response = await api.post(`/rooms/${roomId}/leave`);
