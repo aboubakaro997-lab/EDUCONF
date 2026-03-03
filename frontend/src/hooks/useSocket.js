@@ -193,7 +193,7 @@ const useSocket = (token) => {
     return () => {
       disconnect();
     };
-  }, [token]);
+  }, [token, connect, disconnect]);
 
   // ============ RETOUR DU HOOK ============
   return {

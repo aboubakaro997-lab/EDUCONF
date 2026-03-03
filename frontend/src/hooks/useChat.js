@@ -5,7 +5,6 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 // ============================================================
 const MAX_MESSAGES       = 200;   // Limite de messages en mémoire
 const TYPING_TIMEOUT_MS  = 3000;  // Délai avant d'arrêter "est en train d'écrire"
-const TYPING_DEBOUNCE_MS = 800;   // Anti-rebond frappe clavier
 
 // ============================================================
 //  UTILITAIRES
@@ -91,6 +90,21 @@ const useChat = (socket, roomId, currentUser) => {
     });
   }, []);
 
+  /** Arrêter "est en train d'écrire" */
+  const stopTyping = useCallback(() => {
+    if (!socket?.connected) return;
+
+    if (typingDebounceRef.current) {
+      clearTimeout(typingDebounceRef.current);
+      typingDebounceRef.current = null;
+    }
+
+    socket.emit('typing_stop', {
+      roomId,
+      userId: socket.id,
+    });
+  }, [socket, roomId]);
+
   // ============================================================
   //  3. ENVOYER UN MESSAGE
   // ============================================================
@@ -153,7 +167,7 @@ const useChat = (socket, roomId, currentUser) => {
     stopTyping();
 
     return true;
-  }, [socket, roomId, currentUser, addMessage, scrollToBottom]);
+  }, [socket, roomId, currentUser, addMessage, scrollToBottom, stopTyping]);
 
   // ============================================================
   //  4. INDICATEUR DE FRAPPE
@@ -180,22 +194,7 @@ const useChat = (socket, roomId, currentUser) => {
       stopTyping();
     }, TYPING_TIMEOUT_MS);
 
-  }, [socket, roomId, currentUser]);
-
-  /** Arrêter "est en train d'écrire" */
-  const stopTyping = useCallback(() => {
-    if (!socket?.connected) return;
-
-    if (typingDebounceRef.current) {
-      clearTimeout(typingDebounceRef.current);
-      typingDebounceRef.current = null;
-    }
-
-    socket.emit('typing_stop', {
-      roomId,
-      userId: socket.id,
-    });
-  }, [socket, roomId]);
+  }, [socket, roomId, currentUser, stopTyping]);
 
   /**
    * Gestionnaire de frappe à brancher sur l'input
@@ -280,7 +279,11 @@ const useChat = (socket, roomId, currentUser) => {
       clearTimeout(typingTimeouts.current[userId]);
     }
     typingTimeouts.current[userId] = setTimeout(() => {
-      removeTypingUser(userId);
+      setTypingUsers(prev => prev.filter(u => u.userId !== userId));
+      if (typingTimeouts.current[userId]) {
+        clearTimeout(typingTimeouts.current[userId]);
+        delete typingTimeouts.current[userId];
+      }
     }, TYPING_TIMEOUT_MS + 500);
   }, []);
 

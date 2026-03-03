@@ -417,7 +417,6 @@ const Room = () => {
   //  3. HOOK CHAT
   // ============================================================
   const {
-    messages,
     unreadCount,
     typingText,
     isLoading:        isChatLoading,
@@ -495,51 +494,53 @@ const Room = () => {
   // ============================================================
   useEffect(() => {
     abortRef.current = new AbortController();
-    loadRoom(abortRef.current.signal);
+    const signal = abortRef.current.signal;
+
+    const loadRoom = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+
+        const normalizedKey = String(roomKey || '').trim();
+        if (!normalizedKey) {
+          throw new Error('Lien de salle invalide');
+        }
+
+        setInitStep("Verification du lien d'invitation...");
+        let joinedRoom;
+        try {
+          joinedRoom = await roomService.joinRoomByCode(normalizedKey.toUpperCase());
+        } catch (codeError) {
+          if (!/^\d+$/.test(normalizedKey)) {
+            throw codeError;
+          }
+          joinedRoom = await roomService.joinRoom(Number(normalizedKey));
+        }
+        if (signal?.aborted) return;
+        setRoom(joinedRoom);
+
+        setInitStep('Connexion au serveur...');
+        if (signal?.aborted) return;
+
+        setInitStep('Initialisation vidéo...');
+      } catch (err) {
+        if (err?.name === 'AbortError' || signal?.aborted) return;
+        console.error('❌ Erreur loadRoom:', err);
+        setError(
+          err?.response?.data?.detail || "Impossible d'acceder a cette salle. Utilisez un lien ou un code valide."
+        );
+      } finally {
+        if (!signal?.aborted) setLoading(false);
+      }
+    };
+
+    loadRoom();
 
     return () => {
       abortRef.current?.abort();
       if (hasJoinedRef.current) leaveRoom();
     };
-  }, [roomKey]);
-
-  const loadRoom = async (signal) => {
-    try {
-      setLoading(true);
-      setError(null);
-
-      const normalizedKey = String(roomKey || '').trim();
-      if (!normalizedKey) {
-        throw new Error('Lien de salle invalide');
-      }
-
-      setInitStep("Verification du lien d'invitation...");
-      let joinedRoom;
-      try {
-        joinedRoom = await roomService.joinRoomByCode(normalizedKey.toUpperCase());
-      } catch (codeError) {
-        if (!/^\d+$/.test(normalizedKey)) {
-          throw codeError;
-        }
-        joinedRoom = await roomService.joinRoom(Number(normalizedKey));
-      }
-      if (signal?.aborted) return;
-      setRoom(joinedRoom);
-
-      setInitStep('Connexion au serveur...');
-      if (signal?.aborted) return;
-
-      setInitStep('Initialisation vidéo...');
-    } catch (err) {
-      if (err?.name === 'AbortError' || signal?.aborted) return;
-      console.error('❌ Erreur loadRoom:', err);
-      setError(
-        err?.response?.data?.detail || "Impossible d'acceder a cette salle. Utilisez un lien ou un code valide."
-      );
-    } finally {
-      if (!signal?.aborted) setLoading(false);
-    }
-  };
+  }, [roomKey, leaveRoom]);
 
   // ============================================================
   //  5. CONNEXION SOCKET + JOIN WEBRTC

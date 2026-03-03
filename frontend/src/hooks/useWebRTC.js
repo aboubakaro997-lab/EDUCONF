@@ -533,7 +533,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
   // ── Nettoyage destruction du composant ──
   useEffect(() => {
     return () => { leaveRoom(); };
-  }, []);
+  }, [leaveRoom]);
 
   // ============================================================
   //  RETOUR

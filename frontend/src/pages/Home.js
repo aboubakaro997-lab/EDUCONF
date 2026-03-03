@@ -287,10 +287,10 @@ const Home = () => {
             <div>
               <h4 className="font-bold text-ci-gray-800 mb-4">Liens rapides</h4>
               <ul className="space-y-2 text-sm text-ci-gray-600">
-                <li><a href="#" className="hover:text-ci-orange transition">À propos</a></li>
-                <li><a href="#" className="hover:text-ci-orange transition">Contact</a></li>
-                <li><a href="#" className="hover:text-ci-orange transition">Aide</a></li>
-                <li><a href="#" className="hover:text-ci-orange transition">Blog</a></li>
+                <li><a href="/a-propos" className="hover:text-ci-orange transition">À propos</a></li>
+                <li><a href="/contact" className="hover:text-ci-orange transition">Contact</a></li>
+                <li><a href="/aide" className="hover:text-ci-orange transition">Aide</a></li>
+                <li><a href="/blog" className="hover:text-ci-orange transition">Blog</a></li>
               </ul>
             </div>
 
@@ -298,9 +298,9 @@ const Home = () => {
             <div>
               <h4 className="font-bold text-ci-gray-800 mb-4">Légal</h4>
               <ul className="space-y-2 text-sm text-ci-gray-600">
-                <li><a href="#" className="hover:text-ci-orange transition">Conditions d'utilisation</a></li>
-                <li><a href="#" className="hover:text-ci-orange transition">Politique de confidentialité</a></li>
-                <li><a href="#" className="hover:text-ci-orange transition">Mentions légales</a></li>
+                <li><a href="/conditions-utilisation" className="hover:text-ci-orange transition">Conditions d'utilisation</a></li>
+                <li><a href="/politique-confidentialite" className="hover:text-ci-orange transition">Politique de confidentialité</a></li>
+                <li><a href="/mentions-legales" className="hover:text-ci-orange transition">Mentions légales</a></li>
               </ul>
             </div>
           </div>

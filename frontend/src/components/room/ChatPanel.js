@@ -474,7 +474,7 @@ const ChatPanel = ({
         setLocalUnread(prev => prev + 1);
       }
     }
-  }, [messages.length, scrollToBottom, currentUser?.id]); // ✅ CORRIGÉ
+  }, [messages, scrollToBottom, currentUser?.id]); // ✅ CORRIGÉ
 
   // ✅ FIX : ajout de scrollToBottom dans les dépendances
   useEffect(() => {

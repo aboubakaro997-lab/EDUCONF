@@ -166,13 +166,14 @@ const VideoPlayer = ({
 
   // Attacher le flux à la balise vidéo
   useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-      videoRef.current.onloadedmetadata = () => setIsLoaded(true);
+    const videoEl = videoRef.current;
+    if (videoEl && stream) {
+      videoEl.srcObject = stream;
+      videoEl.onloadedmetadata = () => setIsLoaded(true);
     }
     return () => {
-      if (videoRef.current) {
-        videoRef.current.srcObject = null;
+      if (videoEl) {
+        videoEl.srcObject = null;
       }
     };
   }, [stream]);
