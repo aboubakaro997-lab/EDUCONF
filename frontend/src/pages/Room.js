@@ -361,7 +361,7 @@ const ParticipantsPanel = ({
 //  COMPOSANT PRINCIPAL — Room
 // ============================================================
 const Room = () => {
-  const { roomId } = useParams();
+  const { roomId: roomKey } = useParams();
   const navigate   = useNavigate();
   const { user }   = useAuth();
 
@@ -389,6 +389,10 @@ const Room = () => {
   //  1. HOOK SOCKET
   // ============================================================
   const { socket } = useSocket(localStorage.getItem('access_token'));
+  const activeRoomId = useMemo(
+    () => (room?.id ? String(room.id) : String(roomKey || '')),
+    [room?.id, roomKey]
+  );
 
   // ============================================================
   //  2. HOOK WEBRTC
@@ -406,7 +410,7 @@ const Room = () => {
     toggleAudio,
     toggleVideo,
     toggleScreenShare,
-  } = useWebRTC(socket, roomId, user?.full_name || user?.username, user?.id);
+  } = useWebRTC(socket, activeRoomId, user?.full_name || user?.username, user?.id);
 
   // ============================================================
   //  3. HOOK CHAT
@@ -426,7 +430,7 @@ const Room = () => {
     toggleChat,
     handleInputChange,
     formatTime,
-  } = useChat(socket, roomId, user);
+  } = useChat(socket, activeRoomId, user);
 
   // ============================================================
   //  VALEURS MÉMORISÉES
@@ -491,20 +495,32 @@ const Room = () => {
       abortRef.current?.abort();
       if (hasJoinedRef.current) leaveRoom();
     };
-  }, [roomId]);
+  }, [roomKey]);
 
   const loadRoom = async (signal) => {
     try {
       setLoading(true);
       setError(null);
 
-      setInitStep('Chargement de la salle...');
-      const data = await roomService.getRoom(roomId);
+      const normalizedKey = String(roomKey || '').trim();
+      if (!normalizedKey) {
+        throw new Error('Lien de salle invalide');
+      }
+
+      setInitStep("Verification du lien d'invitation...");
+      let joinedRoom;
+      try {
+        joinedRoom = await roomService.joinRoomByCode(normalizedKey.toUpperCase());
+      } catch (codeError) {
+        if (!/^\d+$/.test(normalizedKey)) {
+          throw codeError;
+        }
+        joinedRoom = await roomService.joinRoom(Number(normalizedKey));
+      }
       if (signal?.aborted) return;
-      setRoom(data);
+      setRoom(joinedRoom);
 
       setInitStep('Connexion au serveur...');
-      await roomService.joinRoom(roomId);
       if (signal?.aborted) return;
 
       setInitStep('Initialisation vidéo...');
@@ -512,7 +528,7 @@ const Room = () => {
       if (err?.name === 'AbortError' || signal?.aborted) return;
       console.error('❌ Erreur loadRoom:', err);
       setError(
-        err?.response?.data?.detail || 'Erreur lors du chargement de la salle'
+        err?.response?.data?.detail || "Impossible d'acceder a cette salle. Utilisez un lien ou un code valide."
       );
     } finally {
       if (!signal?.aborted) setLoading(false);
@@ -636,7 +652,9 @@ const Room = () => {
     try {
       leaveRoom();
       socket?.disconnect();
-      await roomService.leaveRoom(roomId);
+      if (room?.id) {
+        await roomService.leaveRoom(room.id);
+      }
     } catch (err) {
       console.error('Erreur sortie salle:', err);
     } finally {
@@ -644,7 +662,7 @@ const Room = () => {
       setSessionStartedAt(null);
       navigate('/dashboard');
     }
-  }, [leaveRoom, socket, roomId, navigate]);
+  }, [leaveRoom, socket, room?.id, navigate]);
 
   // ============================================================
   //  8. TOGGLE CHAT — panneaux exclusifs ✅
@@ -672,7 +690,7 @@ const Room = () => {
     const next = !isHandRaised;
     setIsHandRaised(next);
     socket?.emit('hand_raised', {
-      roomId,
+      roomId: activeRoomId,
       userId:   socket.id,
       userName: user?.full_name || user?.username,
       raised:   next,
@@ -682,7 +700,7 @@ const Room = () => {
       next ? 'hand' : 'info',
       2000
     );
-  }, [isHandRaised, socket, roomId, user, addToast]);
+  }, [isHandRaised, socket, activeRoomId, user, addToast]);
 
   // ============================================================
   //  RENDU — Chargement / Erreur
@@ -928,7 +946,7 @@ const Room = () => {
         participantsCount={participantsCount}
         unreadMessages={unreadCount}
         roomName={room.name}
-        roomId={roomId}
+        roomId={activeRoomId}
         sessionStartedAt={sessionStartedAt}
 
         // ── Callbacks ──

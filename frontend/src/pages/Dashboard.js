@@ -30,7 +30,7 @@ const Dashboard = () => {
     try {
       setLoading(true);
       setError(null);
-      const data = await roomService.getRooms();
+      const data = await roomService.getMyRooms();
       setRooms(data);
     } catch (err) {
       setError('Erreur lors du chargement des salles');
@@ -61,12 +61,25 @@ const Dashboard = () => {
     }
   };
 
-  const handleJoinRoom = (roomId) => {
-    navigate(`/room/${roomId}`);
+  const getCodeFromInput = (value) => {
+    const raw = value.trim();
+    if (!raw) return '';
+
+    try {
+      const url = new URL(raw);
+      const parts = url.pathname.split('/').filter(Boolean);
+      return (parts[parts.length - 1] || '').toUpperCase();
+    } catch (_) {
+      return raw.toUpperCase();
+    }
+  };
+
+  const handleJoinRoom = (roomCode) => {
+    navigate(`/room/${roomCode}`);
   };
 
   const handleJoinByCode = async () => {
-    const code = joinCode.trim().toUpperCase();
+    const code = getCodeFromInput(joinCode);
     if (!code) {
       setError('Veuillez entrer un code de salle');
       return;
@@ -77,26 +90,24 @@ const Dashboard = () => {
       setError(null);
       const room = await roomService.joinRoomByCode(code);
       setJoinCode('');
-      navigate(`/room/${room.id}`);
+      navigate(`/room/${room.room_code}`);
     } catch (err) {
       const message = extractError(err);
-      const alreadyInRoom =
-        typeof message === 'string' &&
-        (message.toLowerCase().includes('deja dans cette salle') ||
-          message.toLowerCase().includes('deja'));
-
-      if (alreadyInRoom) {
-        const existingRoom = rooms.find((r) => r.room_code === code);
-        if (existingRoom) {
-          navigate(`/room/${existingRoom.id}`);
-          return;
-        }
-      }
-
       setError(message || 'Impossible de rejoindre cette salle');
       console.error(err);
     } finally {
       setJoiningByCode(false);
+    }
+  };
+
+  const copyInviteLink = async (roomCode) => {
+    const inviteUrl = `${window.location.origin}/room/${roomCode}`;
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setError(null);
+    } catch (err) {
+      console.error(err);
+      setError(`Impossible de copier le lien. Utilisez: ${inviteUrl}`);
     }
   };
 
@@ -150,7 +161,7 @@ const Dashboard = () => {
           <div className="flex justify-between items-center mb-4">
             <div>
               <h2 className="text-2xl font-bold text-ci-gray-800">Mes salles de conference</h2>
-              <p className="text-ci-gray-600 mt-1">Gerez vos salles de visioconference</p>
+              <p className="text-ci-gray-600 mt-1">Seules vos salles et invitations apparaissent ici</p>
             </div>
             <Button onClick={() => setShowCreateModal(true)} variant="primary">
               Creer une salle
@@ -164,11 +175,10 @@ const Dashboard = () => {
                   label="Rejoindre avec un code"
                   type="text"
                   value={joinCode}
-                  onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-                  placeholder="Ex: AB12CD"
-                  maxLength={10}
+                  onChange={(e) => setJoinCode(e.target.value)}
+                  placeholder="Code ou lien d'invitation"
                 />
-              </div>
+                </div>
               <Button variant="primary" onClick={handleJoinByCode} disabled={joiningByCode}>
                 {joiningByCode ? 'Connexion...' : 'Rejoindre par code'}
               </Button>
@@ -220,8 +230,11 @@ const Dashboard = () => {
                 )}
 
                 <div className="flex gap-2 mt-auto">
-                  <Button fullWidth variant="primary" onClick={() => handleJoinRoom(room.id)}>
+                  <Button fullWidth variant="primary" onClick={() => handleJoinRoom(room.room_code)}>
                     Rejoindre
+                  </Button>
+                  <Button variant="outline" onClick={() => copyInviteLink(room.room_code)}>
+                    Copier lien
                   </Button>
                   {room.host_id === user?.id && (
                     <Button variant="danger" onClick={() => handleDeleteRoom(room.id)}>

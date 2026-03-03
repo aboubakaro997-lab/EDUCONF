@@ -19,10 +19,12 @@ def list_rooms(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    """Liste les salles actives."""
+    """Liste uniquement les salles auxquelles l'utilisateur participe."""
     return (
         db.query(models.Room)
+        .join(models.Participant, models.Participant.room_id == models.Room.id)
         .filter(models.Room.is_active == True)
+        .filter(models.Participant.user_id == current_user.id)
         .order_by(models.Room.created_at.desc())
         .all()
     )
@@ -61,16 +63,44 @@ def create_room(
     return db_room
 
 
+@router.get("/my", response_model=List[schemas.RoomResponse])
+def list_my_rooms(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Compat frontend: retourne les salles de l'utilisateur."""
+    return (
+        db.query(models.Room)
+        .join(models.Participant, models.Participant.room_id == models.Room.id)
+        .filter(models.Room.is_active == True)
+        .filter(models.Participant.user_id == current_user.id)
+        .order_by(models.Room.created_at.desc())
+        .all()
+    )
+
+
 @router.get("/{room_id}", response_model=schemas.RoomResponse)
 def get_room(
     room_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    """Recuperer une salle par son ID."""
-    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    """Recuperer une salle par son ID si l'utilisateur y participe."""
+    room = db.query(models.Room).filter(
+        models.Room.id == room_id,
+        models.Room.is_active == True,
+    ).first()
     if not room:
         raise HTTPException(status_code=404, detail="Salle introuvable")
+
+    participant = db.query(models.Participant).filter(
+        models.Participant.room_id == room.id,
+        models.Participant.user_id == current_user.id,
+    ).first()
+
+    if not participant:
+        raise HTTPException(status_code=403, detail="Acces refuse a cette salle")
+
     return room
 
 
@@ -81,7 +111,11 @@ def join_room(
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """Rejoindre une salle avec un code."""
-    room = db.query(models.Room).filter(models.Room.room_code == room_code).first()
+    normalized_code = room_code.strip().upper()
+    room = db.query(models.Room).filter(
+        models.Room.room_code == normalized_code,
+        models.Room.is_active == True,
+    ).first()
     if not room:
         raise HTTPException(status_code=404, detail="Salle introuvable")
 
@@ -91,7 +125,7 @@ def join_room(
     ).first()
 
     if existing:
-        raise HTTPException(status_code=400, detail="Vous etes deja dans cette salle")
+        return room
 
     participant = models.Participant(
         room_id=room.id,
@@ -110,8 +144,11 @@ def join_room_by_id(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user),
 ):
-    """Compat frontend: rejoindre une salle par ID."""
-    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    """Rejoindre une salle par ID uniquement si l'utilisateur est deja participant."""
+    room = db.query(models.Room).filter(
+        models.Room.id == room_id,
+        models.Room.is_active == True,
+    ).first()
     if not room:
         raise HTTPException(status_code=404, detail="Salle introuvable")
 
@@ -121,13 +158,10 @@ def join_room_by_id(
     ).first()
 
     if not existing:
-        participant = models.Participant(
-            room_id=room.id,
-            user_id=current_user.id,
-            is_host=(room.host_id == current_user.id),
+        raise HTTPException(
+            status_code=403,
+            detail="Acces refuse. Rejoignez la salle via un lien/code d'invitation",
         )
-        db.add(participant)
-        db.commit()
 
     return room
 

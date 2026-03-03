@@ -3,7 +3,9 @@ from datetime import datetime
 import socketio
 from jose import JWTError, jwt
 
+from app import models
 from app.config import settings
+from app.database import SessionLocal
 
 
 sio = socketio.AsyncServer(
@@ -25,6 +27,38 @@ def get_room_participants(room_id: str):
 
 def get_room_messages(room_id: str):
     return chat_history.get(room_id, [])
+
+
+def _resolve_room_id(raw_room_id):
+    if raw_room_id is None:
+        return None
+    room_str = str(raw_room_id).strip()
+    if not room_str.isdigit():
+        return None
+    return int(room_str)
+
+
+def _can_access_room(user_id: int, room_id: int) -> bool:
+    db = SessionLocal()
+    try:
+        room = db.query(models.Room).filter(
+            models.Room.id == room_id,
+            models.Room.is_active == True,
+        ).first()
+        if not room:
+            return False
+
+        participant = db.query(models.Participant).filter(
+            models.Participant.room_id == room_id,
+            models.Participant.user_id == user_id,
+        ).first()
+        return participant is not None
+    finally:
+        db.close()
+
+
+def _is_sid_in_room(sid: str, room_id: str) -> bool:
+    return sid in rooms_data.get(room_id, {})
 
 
 def _extract_user_id_from_auth(auth_payload):
@@ -82,15 +116,20 @@ async def disconnect(sid):
 
 @sio.event
 async def join_room(sid, data):
-    room_id = data.get("roomId")
+    room_id_raw = data.get("roomId")
     user_name = data.get("userName", "Anonyme")
     user_id = sid_user_ids.get(sid)
 
     if user_id is None:
         return {"error": "Unauthorized"}
 
-    if not room_id:
+    room_id_int = _resolve_room_id(room_id_raw)
+    if room_id_int is None:
         return {"error": "room_id requis"}
+    room_id = str(room_id_int)
+
+    if not _can_access_room(user_id, room_id_int):
+        return {"error": "Acces refuse a cette salle"}
 
     if room_id not in rooms_data:
         rooms_data[room_id] = {}
@@ -133,7 +172,8 @@ async def join_room(sid, data):
 
 @sio.event
 async def leave_room(sid, data):
-    room_id = data.get("roomId")
+    room_id_int = _resolve_room_id(data.get("roomId"))
+    room_id = str(room_id_int) if room_id_int is not None else None
 
     if room_id and room_id in rooms_data:
         user_info = rooms_data[room_id].pop(sid, {})
@@ -156,7 +196,13 @@ async def leave_room(sid, data):
 async def webrtc_offer(sid, data):
     target_sid = data.get("targetId")
     offer = data.get("offer")
-    room_id = data.get("roomId")
+    room_id_int = _resolve_room_id(data.get("roomId"))
+    if room_id_int is None:
+        return {"error": "roomId requis"}
+    room_id = str(room_id_int)
+
+    if not _is_sid_in_room(sid, room_id) or target_sid not in rooms_data.get(room_id, {}):
+        return {"error": "Acces WebRTC refuse"}
 
     await sio.emit(
         "webrtc_offer",
@@ -201,14 +247,18 @@ async def ice_candidate(sid, data):
 
 @sio.event
 async def chat_message(sid, data):
-    room_id = data.get("roomId")
+    room_id_int = _resolve_room_id(data.get("roomId"))
     message = data.get("message")
     user_name = data.get("userName", "Anonyme")
     message_id = data.get("messageId")
     timestamp = data.get("timestamp") or datetime.now().isoformat()
 
-    if not room_id or not message:
+    if room_id_int is None or not message:
         return {"error": "Message invalide"}
+    room_id = str(room_id_int)
+
+    if not _is_sid_in_room(sid, room_id):
+        return {"error": "Acces refuse a cette salle"}
 
     payload = {
         "messageId": message_id or f"{int(datetime.now().timestamp() * 1000)}-{sid[:6]}",
@@ -231,7 +281,14 @@ async def chat_message(sid, data):
 
 @sio.event
 async def media_state_change(sid, data):
-    room_id = data.get("roomId")
+    room_id_int = _resolve_room_id(data.get("roomId"))
+    if room_id_int is None:
+        return {"error": "roomId requis"}
+    room_id = str(room_id_int)
+
+    if not _is_sid_in_room(sid, room_id):
+        return {"error": "Acces refuse a cette salle"}
+
     await sio.emit(
         "media_state_change",
         {
@@ -246,8 +303,11 @@ async def media_state_change(sid, data):
 
 @sio.event
 async def typing_start(sid, data):
-    room_id = data.get("roomId")
-    if not room_id:
+    room_id_int = _resolve_room_id(data.get("roomId"))
+    if room_id_int is None:
+        return
+    room_id = str(room_id_int)
+    if not _is_sid_in_room(sid, room_id):
         return
 
     await sio.emit(
@@ -263,8 +323,11 @@ async def typing_start(sid, data):
 
 @sio.event
 async def typing_stop(sid, data):
-    room_id = data.get("roomId")
-    if not room_id:
+    room_id_int = _resolve_room_id(data.get("roomId"))
+    if room_id_int is None:
+        return
+    room_id = str(room_id_int)
+    if not _is_sid_in_room(sid, room_id):
         return
 
     await sio.emit("typing_stop", {"userId": sid}, room=room_id, skip_sid=sid)
@@ -272,19 +335,26 @@ async def typing_stop(sid, data):
 
 @sio.event
 async def get_chat_history(sid, data):
-    room_id = data.get("roomId")
-    if not room_id:
+    room_id_int = _resolve_room_id(data.get("roomId"))
+    if room_id_int is None:
         return {"error": "roomId requis"}
+    room_id = str(room_id_int)
+    if not _is_sid_in_room(sid, room_id):
+        return {"error": "Acces refuse a cette salle"}
 
     return {"messages": chat_history.get(room_id, [])}
 
 
 @sio.event
 async def delete_message(sid, data):
-    room_id = data.get("roomId")
+    room_id_int = _resolve_room_id(data.get("roomId"))
     message_id = data.get("messageId")
-    if not room_id or not message_id:
+    if room_id_int is None or not message_id:
         return {"error": "roomId et messageId requis"}
+    room_id = str(room_id_int)
+
+    if not _is_sid_in_room(sid, room_id):
+        return {"error": "Acces refuse a cette salle"}
 
     if room_id in chat_history:
         chat_history[room_id] = [
@@ -297,8 +367,11 @@ async def delete_message(sid, data):
 
 @sio.event
 async def hand_raised(sid, data):
-    room_id = data.get("roomId")
-    if not room_id:
+    room_id_int = _resolve_room_id(data.get("roomId"))
+    if room_id_int is None:
+        return
+    room_id = str(room_id_int)
+    if not _is_sid_in_room(sid, room_id):
         return
 
     await sio.emit(
