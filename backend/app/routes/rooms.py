@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List
 import string
 import random
+from datetime import datetime
 from .. import models, schemas, auth
 from ..database import get_db
 
@@ -12,6 +13,13 @@ router = APIRouter(prefix="/rooms", tags=["Rooms"])
 def generate_room_code():
     """Genere un code de salle aleatoire de 6 caracteres."""
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+
+
+def format_seconds(total_seconds: int) -> str:
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 @router.get("/", response_model=List[schemas.RoomResponse])
@@ -210,6 +218,80 @@ def leave_room_post(
     db.delete(participant)
     db.commit()
     return {"message": "Vous avez quitte la salle"}
+
+
+@router.get("/{room_id}/attendance", response_model=schemas.AttendanceReportResponse)
+def get_room_attendance(
+    room_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """Generer la liste de presence (reserve a l'hote)."""
+    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Salle introuvable")
+
+    if room.host_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Seul l'hote peut generer la liste de presence")
+
+    sessions = (
+        db.query(models.RoomSession, models.User)
+        .join(models.User, models.User.id == models.RoomSession.user_id)
+        .filter(models.RoomSession.room_id == room_id)
+        .order_by(models.RoomSession.joined_at.asc())
+        .all()
+    )
+
+    now = datetime.utcnow()
+    by_user = {}
+
+    for session, user in sessions:
+        if user.id not in by_user:
+            by_user[user.id] = {
+                "user_id": user.id,
+                "nom_prenom": user.full_name or user.username,
+                "heure_entree": session.joined_at,
+                "heure_sortie": session.left_at,
+                "temps_total_secondes": 0,
+            }
+
+        entry = by_user[user.id]
+
+        if session.joined_at and (
+            entry["heure_entree"] is None or session.joined_at < entry["heure_entree"]
+        ):
+            entry["heure_entree"] = session.joined_at
+
+        candidate_exit = session.left_at or now
+        if entry["heure_sortie"] is None or candidate_exit > entry["heure_sortie"]:
+            entry["heure_sortie"] = candidate_exit
+
+        if session.joined_at:
+            end_time = session.left_at or now
+            delta = int((end_time - session.joined_at).total_seconds())
+            entry["temps_total_secondes"] += max(0, delta)
+
+    participants = []
+    for item in by_user.values():
+        participants.append(
+            schemas.AttendanceEntryResponse(
+                user_id=item["user_id"],
+                nom_prenom=item["nom_prenom"],
+                heure_entree=item["heure_entree"],
+                heure_sortie=item["heure_sortie"],
+                temps_total_secondes=item["temps_total_secondes"],
+                temps_total_humain=format_seconds(item["temps_total_secondes"]),
+            )
+        )
+
+    participants.sort(key=lambda x: x.nom_prenom.lower())
+
+    return schemas.AttendanceReportResponse(
+        room_id=room.id,
+        room_name=room.name,
+        generated_at=now,
+        participants=participants,
+    )
 
 
 @router.delete("/{room_id}")

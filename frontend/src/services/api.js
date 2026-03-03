@@ -267,13 +267,19 @@ export const roomService = {
     return response.data;
   },
 
-  /** Participants d'une salle → GET /api/rooms/:id/participants */
+  /** Participants d'une salle -> GET /api/rooms/:id/participants */
   getRoomParticipants: async (roomId) => {
     const response = await api.get(`/rooms/${roomId}/participants`);
     return response.data;
   },
 
-  /** Mes salles → GET /api/rooms/my */
+  /** Liste de presence (hote) -> GET /api/rooms/:id/attendance */
+  getRoomAttendance: async (roomId) => {
+    const response = await api.get(`/rooms/${roomId}/attendance`);
+    return response.data;
+  },
+
+  /** Mes salles -> GET /api/rooms/my */
   getMyRooms: async () => {
     const response = await api.get('/rooms/my');
     return response.data;
@@ -336,3 +342,5 @@ export const messageService = {
 //  EXPORT PAR DÉFAUT
 // ============================================================
 export default api;
+
+

@@ -84,3 +84,20 @@ class SessionResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+# ============ ATTENDANCE SCHEMAS ============
+class AttendanceEntryResponse(BaseModel):
+    user_id: int
+    nom_prenom: str
+    heure_entree: Optional[datetime] = None
+    heure_sortie: Optional[datetime] = None
+    temps_total_secondes: int
+    temps_total_humain: str
+
+
+class AttendanceReportResponse(BaseModel):
+    room_id: int
+    room_name: str
+    generated_at: datetime
+    participants: list[AttendanceEntryResponse]

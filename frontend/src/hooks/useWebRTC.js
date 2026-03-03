@@ -174,11 +174,11 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
         console.log(`📤 Offre → ${targetId}`);
 
       } else if (signalData.type === 'answer') {
-        socket.emit('webrtc_answer', { targetId, answer: signalData });
+        socket.emit('webrtc_answer', { targetId, answer: signalData, roomId });
         console.log(`📤 Réponse → ${targetId}`);
 
       } else if (signalData.candidate) {
-        socket.emit('ice_candidate', { targetId, candidate: signalData });
+        socket.emit('ice_candidate', { targetId, candidate: signalData, roomId });
       }
     });
 
@@ -496,6 +496,20 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
       );
     };
 
+    const onHostForceMedia = ({ audio, video }) => {
+      if (audio === false) {
+        const audioTrack = localStreamRef.current?.getAudioTracks?.()[0];
+        if (audioTrack) audioTrack.enabled = false;
+        setIsAudioEnabled(false);
+      }
+
+      if (video === false) {
+        const videoTrack = localStreamRef.current?.getVideoTracks?.()[0];
+        if (videoTrack) videoTrack.enabled = false;
+        setIsVideoEnabled(false);
+      }
+    };
+
     // Abonnements
     socket.on('user_joined',        onUserJoined);
     socket.on('user_left',          onUserLeft);
@@ -503,6 +517,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
     socket.on('webrtc_answer',      onAnswer);
     socket.on('ice_candidate',      onIceCandidate);
     socket.on('media_state_change', onMediaStateChange);
+    socket.on('host_force_media',   onHostForceMedia);
 
     return () => {
       socket.off('user_joined',        onUserJoined);
@@ -511,6 +526,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
       socket.off('webrtc_answer',      onAnswer);
       socket.off('ice_candidate',      onIceCandidate);
       socket.off('media_state_change', onMediaStateChange);
+      socket.off('host_force_media',   onHostForceMedia);
     };
   }, [socket, createPeer, removePeer, normalizeParticipants, ensurePeerConnections]);
 
@@ -551,4 +567,5 @@ const getMediaErrorMessage = (error) => {
 };
 
 export default useWebRTC;
+
 

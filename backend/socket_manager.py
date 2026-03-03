@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Optional
 
 import socketio
 from jose import JWTError, jwt
@@ -57,6 +58,60 @@ def _can_access_room(user_id: int, room_id: int) -> bool:
         db.close()
 
 
+def _is_host(user_id: int, room_id: int) -> bool:
+    db = SessionLocal()
+    try:
+        room = db.query(models.Room).filter(models.Room.id == room_id).first()
+        return bool(room and room.host_id == user_id)
+    finally:
+        db.close()
+
+
+def _resolve_user_name(user_id: int) -> str:
+    db = SessionLocal()
+    try:
+        user = db.query(models.User).filter(models.User.id == user_id).first()
+        if not user:
+            return "Anonyme"
+        return user.full_name or user.username
+    finally:
+        db.close()
+
+
+def _open_room_session(room_id: int, user_id: int, socket_id: str) -> str:
+    session_socket_id = f"{socket_id}:{room_id}:{int(datetime.utcnow().timestamp() * 1000)}"
+    db = SessionLocal()
+    try:
+        session = models.RoomSession(
+            room_id=room_id,
+            user_id=user_id,
+            socket_id=session_socket_id,
+            joined_at=datetime.utcnow(),
+            left_at=None,
+        )
+        db.add(session)
+        db.commit()
+        return session_socket_id
+    finally:
+        db.close()
+
+
+def _close_room_session(session_socket_id: Optional[str]) -> None:
+    if not session_socket_id:
+        return
+    db = SessionLocal()
+    try:
+        session = db.query(models.RoomSession).filter(
+            models.RoomSession.socket_id == session_socket_id,
+            models.RoomSession.left_at.is_(None),
+        ).first()
+        if session:
+            session.left_at = datetime.utcnow()
+            db.commit()
+    finally:
+        db.close()
+
+
 def _is_sid_in_room(sid: str, room_id: str) -> bool:
     return sid in rooms_data.get(room_id, {})
 
@@ -99,6 +154,7 @@ async def disconnect(sid):
     for room_id, participants in list(rooms_data.items()):
         if sid in participants:
             user_info = participants.pop(sid)
+            _close_room_session(user_info.get("sessionSocketId"))
             await sio.emit(
                 "user_left",
                 {
@@ -130,6 +186,7 @@ async def join_room(sid, data):
 
     if not _can_access_room(user_id, room_id_int):
         return {"error": "Acces refuse a cette salle"}
+    resolved_user_name = _resolve_user_name(user_id) or user_name
 
     if room_id not in rooms_data:
         rooms_data[room_id] = {}
@@ -147,10 +204,12 @@ async def join_room(sid, data):
         except Exception:
             pass
 
+    session_socket_id = _open_room_session(room_id_int, user_id, sid)
     rooms_data[room_id][sid] = {
         "sid": sid,
         "userId": user_id,
-        "userName": user_name,
+        "userName": resolved_user_name,
+        "sessionSocketId": session_socket_id,
         "joinedAt": datetime.now().isoformat(),
     }
 
@@ -160,7 +219,7 @@ async def join_room(sid, data):
         "user_joined",
         {
             "userId": sid,
-            "userName": user_name,
+            "userName": resolved_user_name,
             "participants": list(rooms_data[room_id].values()),
         },
         room=room_id,
@@ -177,6 +236,7 @@ async def leave_room(sid, data):
 
     if room_id and room_id in rooms_data:
         user_info = rooms_data[room_id].pop(sid, {})
+        _close_room_session(user_info.get("sessionSocketId"))
         await sio.emit(
             "user_left",
             {
@@ -219,12 +279,20 @@ async def webrtc_offer(sid, data):
 async def webrtc_answer(sid, data):
     target_sid = data.get("targetId")
     answer = data.get("answer")
+    room_id_int = _resolve_room_id(data.get("roomId"))
+    if room_id_int is None:
+        return {"error": "roomId requis"}
+    room_id = str(room_id_int)
+
+    if not _is_sid_in_room(sid, room_id) or target_sid not in rooms_data.get(room_id, {}):
+        return {"error": "Acces WebRTC refuse"}
 
     await sio.emit(
         "webrtc_answer",
         {
             "answer": answer,
             "fromId": sid,
+            "roomId": room_id,
         },
         to=target_sid,
     )
@@ -234,12 +302,20 @@ async def webrtc_answer(sid, data):
 async def ice_candidate(sid, data):
     target_sid = data.get("targetId")
     candidate = data.get("candidate")
+    room_id_int = _resolve_room_id(data.get("roomId"))
+    if room_id_int is None:
+        return {"error": "roomId requis"}
+    room_id = str(room_id_int)
+
+    if not _is_sid_in_room(sid, room_id) or target_sid not in rooms_data.get(room_id, {}):
+        return {"error": "Acces WebRTC refuse"}
 
     await sio.emit(
         "ice_candidate",
         {
             "candidate": candidate,
             "fromId": sid,
+            "roomId": room_id,
         },
         to=target_sid,
     )
@@ -384,4 +460,40 @@ async def hand_raised(sid, data):
         room=room_id,
         skip_sid=sid,
     )
+
+
+@sio.event
+async def host_mute_all(sid, data):
+    room_id_int = _resolve_room_id(data.get("roomId"))
+    if room_id_int is None:
+        return {"error": "roomId requis"}
+
+    user_id = sid_user_ids.get(sid)
+    if user_id is None:
+        return {"error": "Unauthorized"}
+
+    if not _is_host(user_id, room_id_int):
+        return {"error": "Seul l'hote peut couper les medias"}
+
+    room_id = str(room_id_int)
+    if not _is_sid_in_room(sid, room_id):
+        return {"error": "Hote non present dans la salle"}
+
+    action = (data.get("action") or "audio").lower()
+    force_audio = action in {"audio", "both"}
+    force_video = action in {"video", "both"}
+
+    await sio.emit(
+        "host_force_media",
+        {
+            "roomId": room_id,
+            "audio": False if force_audio else None,
+            "video": False if force_video else None,
+            "action": action,
+        },
+        room=room_id,
+        skip_sid=sid,
+    )
+
+    return {"success": True}
 

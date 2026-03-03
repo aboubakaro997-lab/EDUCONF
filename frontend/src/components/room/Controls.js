@@ -226,6 +226,8 @@ const Controls = ({
   roomName          = 'EduConf CI',
   roomId            = null,
   sessionStartedAt  = null,
+  isHost            = false,
+  attendanceLoading = false,
 
   // ── Callbacks ──
   onToggleAudio,
@@ -235,10 +237,14 @@ const Controls = ({
   onToggleHand,
   onToggleParticipants,
   onLeaveRoom,
+  onMuteAllMics,
+  onDisableAllCameras,
+  onGenerateAttendance,
 }) => {
   const timerStorageKey = `room_session_started_at_${roomId || roomName}`;
   const timer = useSessionTimer(sessionStartedAt, timerStorageKey);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
+  const [showHostActions, setShowHostActions] = useState(false);
 
   // ── Confirmation quitter ──
   const handleLeaveClick = useCallback(() => {
@@ -279,6 +285,51 @@ const Controls = ({
       {/* ============================================================
           MODAL DE CONFIRMATION — Quitter
       ============================================================ */}
+      {showHostActions && (
+        <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-ci-gray-900 border border-ci-gray-700 rounded-2xl p-6 max-w-sm w-full mx-4 shadow-2xl">
+            <div className="h-1 w-full bg-gradient-to-r from-ci-orange via-white to-ci-green rounded-full mb-5" />
+            <div className="text-center mb-5">
+              <h3 className="text-white text-lg font-bold mb-1">Options hote</h3>
+              <p className="text-ci-gray-400 text-sm">Gestion globale des participants</p>
+            </div>
+            <div className="space-y-3">
+              <button
+                onClick={() => {
+                  onMuteAllMics?.();
+                  setShowHostActions(false);
+                }}
+                className="w-full py-2.5 rounded-xl bg-ci-orange hover:bg-orange-600 text-white font-semibold text-sm"
+              >
+                Couper tous les micros
+              </button>
+              <button
+                onClick={() => {
+                  onDisableAllCameras?.();
+                  setShowHostActions(false);
+                }}
+                className="w-full py-2.5 rounded-xl bg-ci-green hover:bg-green-700 text-white font-semibold text-sm"
+              >
+                Couper toutes les cameras
+              </button>
+              <button
+                onClick={() => onGenerateAttendance?.()}
+                disabled={attendanceLoading}
+                className="w-full py-2.5 rounded-xl border border-ci-gray-600 text-white font-semibold text-sm hover:bg-ci-gray-700 disabled:opacity-60"
+              >
+                {attendanceLoading ? 'Generation...' : 'Generer la liste de presence'}
+              </button>
+              <button
+                onClick={() => setShowHostActions(false)}
+                className="w-full py-2.5 rounded-xl border border-ci-gray-700 text-ci-gray-300 text-sm hover:bg-ci-gray-800"
+              >
+                Fermer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showLeaveConfirm && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="
@@ -458,6 +509,17 @@ const Controls = ({
               >
                 <Icons.Chat />
               </ControlButton>
+
+              {isHost && (
+                <ControlButton
+                  onClick={() => setShowHostActions(true)}
+                  title="Options hote"
+                  isActive={true}
+                  activeClass="bg-ci-gray-700 hover:bg-ci-gray-600 text-white"
+                >
+                  <Icons.More />
+                </ControlButton>
+              )}
 
             </div>
           </div>

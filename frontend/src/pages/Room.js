@@ -377,6 +377,7 @@ const Room = () => {
   const [isOffline,           setIsOffline]           = useState(!navigator.onLine);
   const [isReconnecting,      setIsReconnecting]      = useState(false);
   const [sessionStartedAt,    setSessionStartedAt]    = useState(null);
+  const [attendanceLoading,   setAttendanceLoading]   = useState(false);
 
   // ── Refs ──
   const hasJoinedRef = useRef(false);
@@ -461,6 +462,11 @@ const Room = () => {
       ? (labels[room.room_type] || '🏫 Salle')
       : null;
   }, [room?.room_type]);
+
+  const isHost = useMemo(
+    () => room?.host_id === user?.id,
+    [room?.host_id, user?.id]
+  );
 
   // ============================================================
   //  SURVEILLANCE RÉSEAU
@@ -645,6 +651,23 @@ const Room = () => {
     return () => socket.off('hand_raised', onHandRaised);
   }, [socket, addToast]);
 
+  useEffect(() => {
+    if (!socket) return;
+
+    const onHostForceMedia = ({ audio, video }) => {
+      if (audio === false && video === false) {
+        addToast('L hote a coupe les micros et les cameras', 'warning', 3000);
+      } else if (audio === false) {
+        addToast('L hote a coupe tous les micros', 'warning', 2500);
+      } else if (video === false) {
+        addToast('L hote a coupe toutes les cameras', 'warning', 2500);
+      }
+    };
+
+    socket.on('host_force_media', onHostForceMedia);
+    return () => socket.off('host_force_media', onHostForceMedia);
+  }, [socket, addToast]);
+
   // ============================================================
   //  7. QUITTER LA SALLE
   // ============================================================
@@ -701,6 +724,55 @@ const Room = () => {
       2000
     );
   }, [isHandRaised, socket, activeRoomId, user, addToast]);
+
+  const handleMuteAllMics = useCallback(() => {
+    if (!isHost) return;
+    socket?.emit('host_mute_all', { roomId: activeRoomId, action: 'audio' });
+    addToast('Tous les micros des participants ont ete coupes', 'warning', 2500);
+  }, [isHost, socket, activeRoomId, addToast]);
+
+  const handleDisableAllCameras = useCallback(() => {
+    if (!isHost) return;
+    socket?.emit('host_mute_all', { roomId: activeRoomId, action: 'video' });
+    addToast('Toutes les cameras des participants ont ete coupees', 'warning', 2500);
+  }, [isHost, socket, activeRoomId, addToast]);
+
+  const handleGenerateAttendance = useCallback(async () => {
+    if (!isHost || !room?.id) return;
+
+    try {
+      setAttendanceLoading(true);
+      const report = await roomService.getRoomAttendance(room.id);
+
+      const rows = (report.participants || []).map((p) => [
+        p.nom_prenom || '',
+        p.temps_total_humain || '00:00:00',
+        p.heure_entree ? new Date(p.heure_entree).toLocaleString('fr-FR') : '',
+        p.heure_sortie ? new Date(p.heure_sortie).toLocaleString('fr-FR') : '',
+      ]);
+      const header = ['Nom Prenom', 'Temps cumule', 'Heure entree', 'Heure sortie'];
+      const csv = [header, ...rows]
+        .map((line) => line.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
+        .join('\n');
+
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `presence-${room.name.replace(/\s+/g, '-').toLowerCase()}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+
+      addToast('Liste de presence generee', 'success', 2500);
+    } catch (err) {
+      console.error(err);
+      addToast("Impossible de generer la liste de presence", 'warning', 3000);
+    } finally {
+      setAttendanceLoading(false);
+    }
+  }, [isHost, room?.id, room?.name, addToast]);
 
   // ============================================================
   //  RENDU — Chargement / Erreur
@@ -948,6 +1020,8 @@ const Room = () => {
         roomName={room.name}
         roomId={activeRoomId}
         sessionStartedAt={sessionStartedAt}
+        isHost={isHost}
+        attendanceLoading={attendanceLoading}
 
         // ── Callbacks ──
         onToggleAudio={toggleAudio}
@@ -957,6 +1031,9 @@ const Room = () => {
         onToggleHand={handleToggleHand}
         onToggleParticipants={handleToggleParticipants}
         onLeaveRoom={handleLeaveRoom}
+        onMuteAllMics={handleMuteAllMics}
+        onDisableAllCameras={handleDisableAllCameras}
+        onGenerateAttendance={handleGenerateAttendance}
       />
 
     </div>
