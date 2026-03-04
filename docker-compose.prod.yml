@@ -14,6 +14,16 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
   backend:
     build:
       context: ./backend
@@ -34,8 +44,11 @@ services:
       RATE_LIMIT_LOGIN_WINDOW_SECONDS: ${RATE_LIMIT_LOGIN_WINDOW_SECONDS}
       RATE_LIMIT_REGISTER_ATTEMPTS: ${RATE_LIMIT_REGISTER_ATTEMPTS}
       RATE_LIMIT_REGISTER_WINDOW_SECONDS: ${RATE_LIMIT_REGISTER_WINDOW_SECONDS}
+      REDIS_URL: ${REDIS_URL}
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]

@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     RATE_LIMIT_LOGIN_WINDOW_SECONDS: int = 300
     RATE_LIMIT_REGISTER_ATTEMPTS: int = 5
     RATE_LIMIT_REGISTER_WINDOW_SECONDS: int = 600
+    REDIS_URL: Optional[str] = None
+    RATE_LIMIT_REDIS_PREFIX: str = "educonf:ratelimit"
 
     MAIL_SERVER: Optional[str] = None
     MAIL_PORT: Optional[int] = None

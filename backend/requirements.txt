@@ -11,3 +11,4 @@ python-socketio
 pydantic-settings
 pydantic[email]
 email-validator
+redis

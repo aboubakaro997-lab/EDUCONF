@@ -11,7 +11,7 @@ from app.database import SessionLocal
 
 sio = socketio.AsyncServer(
     async_mode="asgi",
-    cors_allowed_origins=settings.allowed_origins or ["*"],
+    cors_allowed_origins=settings.allowed_origins,
     logger=True,
     engineio_logger=False,
 )
@@ -19,6 +19,7 @@ sio = socketio.AsyncServer(
 rooms_data = {}
 chat_history = {}
 sid_user_ids = {}
+room_host_presence = {}
 MAX_HISTORY = 200
 
 
@@ -154,6 +155,7 @@ async def disconnect(sid):
     for room_id, participants in list(rooms_data.items()):
         if sid in participants:
             user_info = participants.pop(sid)
+            disconnected_user_id = user_info.get("userId")
             _close_room_session(user_info.get("sessionSocketId"))
             await sio.emit(
                 "user_left",
@@ -165,7 +167,31 @@ async def disconnect(sid):
                 room=room_id,
             )
             await sio.leave_room(sid, room_id)
+
+            room_id_int = _resolve_room_id(room_id)
+            if (
+                room_id_int is not None
+                and disconnected_user_id is not None
+                and _is_host(disconnected_user_id, room_id_int)
+            ):
+                host_still_present = any(
+                    info.get("userId") == disconnected_user_id
+                    for info in participants.values()
+                )
+                if not host_still_present:
+                    room_host_presence[room_id] = False
+                    await sio.emit(
+                        "host_status",
+                        {
+                            "roomId": room_id,
+                            "hostUserId": disconnected_user_id,
+                            "present": False,
+                        },
+                        room=room_id,
+                    )
+
             if not participants:
+                room_host_presence.pop(room_id, None)
                 del rooms_data[room_id]
             break
 
@@ -176,20 +202,31 @@ async def join_room(sid, data):
     user_name = data.get("userName", "Anonyme")
     user_id = sid_user_ids.get(sid)
 
+    print(f"🔍 join_room: sid={sid}, user_id={user_id}, room_id_raw={room_id_raw}, user_name={user_name}")
+
     if user_id is None:
+        print(f"   ❌ Unauthorized - no user_id for sid={sid}")
         return {"error": "Unauthorized"}
 
     room_id_int = _resolve_room_id(room_id_raw)
     if room_id_int is None:
+        print(f"   ❌ Invalid room_id")
         return {"error": "room_id requis"}
     room_id = str(room_id_int)
 
     if not _can_access_room(user_id, room_id_int):
+        print(f"   ❌ Access denied for user_id={user_id} to room={room_id_int}")
         return {"error": "Acces refuse a cette salle"}
+    
+    print(f"   ✅ Access granted")
+
     resolved_user_name = _resolve_user_name(user_id) or user_name
 
     if room_id not in rooms_data:
         rooms_data[room_id] = {}
+        print(f"   📝 Created new room data for room_id={room_id}")
+    else:
+        print(f"   📝 Existing room, current participants: {list(rooms_data[room_id].keys())}")
 
     stale_sids = []
     for existing_sid, info in rooms_data[room_id].items():
@@ -214,6 +251,7 @@ async def join_room(sid, data):
     }
 
     await sio.enter_room(sid, room_id)
+    print(f"   ✅ Joined room, now participants: {list(rooms_data[room_id].keys())}")
 
     await sio.emit(
         "user_joined",
@@ -226,6 +264,21 @@ async def join_room(sid, data):
         skip_sid=sid,
     )
 
+    if _is_host(user_id, room_id_int):
+        previously_present = room_host_presence.get(room_id, False)
+        room_host_presence[room_id] = True
+        if not previously_present:
+            await sio.emit(
+                "host_status",
+                {
+                    "roomId": room_id,
+                    "hostUserId": user_id,
+                    "present": True,
+                },
+                room=room_id,
+            )
+
+    print(f"   ✅ join_room complete, returning {len(rooms_data[room_id])} participants")
     return {"success": True, "participants": list(rooms_data[room_id].values())}
 
 
@@ -236,6 +289,7 @@ async def leave_room(sid, data):
 
     if room_id and room_id in rooms_data:
         user_info = rooms_data[room_id].pop(sid, {})
+        leaving_user_id = user_info.get("userId")
         _close_room_session(user_info.get("sessionSocketId"))
         await sio.emit(
             "user_left",
@@ -248,7 +302,25 @@ async def leave_room(sid, data):
         )
         await sio.leave_room(sid, room_id)
 
+        if room_id_int is not None and leaving_user_id is not None and _is_host(leaving_user_id, room_id_int):
+            host_still_present = any(
+                info.get("userId") == leaving_user_id
+                for info in rooms_data[room_id].values()
+            )
+            if not host_still_present:
+                room_host_presence[room_id] = False
+                await sio.emit(
+                    "host_status",
+                    {
+                        "roomId": room_id,
+                        "hostUserId": leaving_user_id,
+                        "present": False,
+                    },
+                    room=room_id,
+                )
+
         if not rooms_data[room_id]:
+            room_host_presence.pop(room_id, None)
             del rooms_data[room_id]
 
 
@@ -261,8 +333,16 @@ async def webrtc_offer(sid, data):
         return {"error": "roomId requis"}
     room_id = str(room_id_int)
 
-    if not _is_sid_in_room(sid, room_id) or target_sid not in rooms_data.get(room_id, {}):
-        return {"error": "Acces WebRTC refuse"}
+    print(f"🔍 webrtc_offer: from={sid} to={target_sid} room={room_id}")
+    print(f"   room participants: {list(rooms_data.get(room_id, {}).keys())}")
+    
+    if not _is_sid_in_room(sid, room_id):
+        print(f"   ❌ Sender {sid} not in room {room_id}")
+        return {"error": "Acces WebRTC refuse - sender not in room"}
+    
+    if target_sid not in rooms_data.get(room_id, {}):
+        print(f"   ❌ Target {target_sid} not in room {room_id}")
+        return {"error": "Acces WebRTC refuse - target not in room"}
 
     await sio.emit(
         "webrtc_offer",
@@ -273,6 +353,7 @@ async def webrtc_offer(sid, data):
         },
         to=target_sid,
     )
+    print(f"   ✅ Offer forwarded to {target_sid}")
 
 
 @sio.event
@@ -284,8 +365,15 @@ async def webrtc_answer(sid, data):
         return {"error": "roomId requis"}
     room_id = str(room_id_int)
 
-    if not _is_sid_in_room(sid, room_id) or target_sid not in rooms_data.get(room_id, {}):
-        return {"error": "Acces WebRTC refuse"}
+    print(f"🔍 webrtc_answer: from={sid} to={target_sid} room={room_id}")
+    
+    if not _is_sid_in_room(sid, room_id):
+        print(f"   ❌ Sender {sid} not in room")
+        return {"error": "Acces WebRTC refuse - sender not in room"}
+    
+    if target_sid not in rooms_data.get(room_id, {}):
+        print(f"   ❌ Target {target_sid} not in room")
+        return {"error": "Acces WebRTC refuse - target not in room"}
 
     await sio.emit(
         "webrtc_answer",
@@ -296,6 +384,7 @@ async def webrtc_answer(sid, data):
         },
         to=target_sid,
     )
+    print(f"   ✅ Answer forwarded to {target_sid}")
 
 
 @sio.event
@@ -307,8 +396,13 @@ async def ice_candidate(sid, data):
         return {"error": "roomId requis"}
     room_id = str(room_id_int)
 
-    if not _is_sid_in_room(sid, room_id) or target_sid not in rooms_data.get(room_id, {}):
-        return {"error": "Acces WebRTC refuse"}
+    print(f"🔍 ice_candidate: from={sid} to={target_sid} room={room_id}")
+
+    if not _is_sid_in_room(sid, room_id):
+        return {"error": "Acces WebRTC refuse - sender not in room"}
+
+    if target_sid not in rooms_data.get(room_id, {}):
+        return {"error": "Acces WebRTC refuse - target not in room"}
 
     await sio.emit(
         "ice_candidate",

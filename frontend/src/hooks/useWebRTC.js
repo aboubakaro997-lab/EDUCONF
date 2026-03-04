@@ -261,15 +261,17 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
         return;
       }
 
-      console.log(`✅ Salle "${roomId}" rejointe`);
+      console.log(`✅ Salle "${roomId}" rejointe, participants:`, response?.participants);
 
       if (response?.participants) {
         const normalized = normalizeParticipants(response.participants);
         setParticipants(normalized);
 
         // Initier connexion avec chaque participant existant
+        // IMPORTANT: Utiliser participant.sid (socket ID) pour WebRTC
         normalized.forEach((participant) => {
           if (participant.sid !== socket.id) {
+            console.log(`🔗 Création peer avec ${participant.sid} (participant existant)`);
             createPeer(participant.sid, true, stream || null);
           }
         });
@@ -452,27 +454,47 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
 
     // ── Nouveau participant ──
     const onUserJoined = ({ userId, userName: name, participants: p }) => {
-      console.log(`👤 Rejoint : ${name}`);
-      setParticipants(normalizeParticipants(p || []));
+      console.log(`👤 UserJoined reçu: userId=${userId} (type: ${typeof userId}), name=${name}`);
+      console.log(`   Participants dans l'event:`, p);
+      console.log(`   Mon socket.id:`, socket.id);
+      
+      const normalized = normalizeParticipants(p || []);
+      console.log(`   Participants normalisés:`, normalized);
 
-      if (userId !== socket.id) {
-        createPeer(userId, false, localStreamRef.current || null);
+      setParticipants(normalized);
+
+      // IMPORTANT: Le backend envoie userId = sid (socket ID)
+      // Chercher le participant par son sid
+      const newParticipant = normalized.find((p) => p.sid === userId);
+      console.log(`   Participant trouvé par sid:`, newParticipant);
+
+      if (newParticipant && newParticipant.sid !== socket.id) {
+        console.log(`🔗 Création peer avec ${newParticipant.sid} (nouveau participant)`);
+        createPeer(newParticipant.sid, false, localStreamRef.current || null);
         setTimeout(() => ensurePeerConnections(localStreamRef.current || null), 150);
+      } else {
+        console.log(`   ⚠️ Pas de nouveau participant à connecter (userId=${userId}, socket.id=${socket.id})`);
       }
     };
 
     // ── Participant parti ──
     const onUserLeft = ({ userId, participants: p }) => {
-      setParticipants(normalizeParticipants(p || []));
+      console.log(`👋 Particiant parti: userId=${userId}`);
+      const normalized = normalizeParticipants(p || []);
+      setParticipants(normalized);
+
+      // Le backend envoie userId = sid du socket sortant.
       removePeer(userId);
     };
 
     // ── Offre WebRTC ──
     const onOffer = ({ offer, fromId }) => {
       console.log(`📥 Offre reçue de ${fromId}`);
+      console.log(`   Mes participants actuels:`, Object.keys(peersRef.current));
 
       let peer = peersRef.current[fromId];
       if (!peer) {
+        console.log(`   ➕ Création nouveau peer pour l'offre`);
         peer = createPeer(fromId, false, localStreamRef.current || null);
       }
       peer.signal(offer);
@@ -481,12 +503,22 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
     // ── Réponse WebRTC ──
     const onAnswer = ({ answer, fromId }) => {
       console.log(`📥 Réponse reçue de ${fromId}`);
-      peersRef.current[fromId]?.signal(answer);
+      const peer = peersRef.current[fromId];
+      if (peer) {
+        peer.signal(answer);
+      } else {
+        console.warn(`   ⚠️ Pas de peer trouvé pour ${fromId}`);
+      }
     };
 
     // ── Candidat ICE ──
     const onIceCandidate = ({ candidate, fromId }) => {
-      peersRef.current[fromId]?.signal(candidate);
+      const peer = peersRef.current[fromId];
+      if (peer) {
+        peer.signal(candidate);
+      } else {
+        console.warn(`⚠️ ICE candidate reçu mais pas de peer pour ${fromId}`);
+      }
     };
 
     // ── Changement état média ──

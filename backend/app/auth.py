@@ -1,8 +1,5 @@
-# auth.py — VERSION DÉFINITIVE SANS PASSLIB
-import hashlib
-import base64
 import bcrypt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from jose import JWTError, jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
@@ -15,31 +12,38 @@ from .database import get_db
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/login")
 
 
-# ============ UTILITAIRE INTERNE ============
-
-def _prepare_password(password: str) -> bytes:
-    """
-    SHA-256 + base64 pour contourner la limite 72 bytes de bcrypt.
-    Retourne des bytes directement utilisables par bcrypt.
-    """
-    digest = hashlib.sha256(password.encode("utf-8")).digest()
-    return base64.b64encode(digest)  # ← toujours < 72 bytes
-
-
 # ============ FONCTIONS DE HACHAGE ============
 
 def hash_password(password: str) -> str:
-    """Hache un mot de passe avec bcrypt natif"""
-    prepared = _prepare_password(password)
+    """Hache un mot de passe avec bcrypt standard."""
     salt = bcrypt.gensalt()
-    hashed = bcrypt.hashpw(prepared, salt)
+    hashed = bcrypt.hashpw(password.encode("utf-8"), salt)
     return hashed.decode("utf-8")
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Vérifie un mot de passe contre son hash bcrypt"""
-    prepared = _prepare_password(plain_password)
-    return bcrypt.checkpw(prepared, hashed_password.encode("utf-8"))
+    """Vérifie un mot de passe contre son hash bcrypt.
+
+    Compatibilité ascendante:
+    - 1er essai: bcrypt standard
+    - fallback: ancien format (sha256+base64 puis bcrypt)
+    """
+    try:
+        if bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8")):
+            return True
+    except Exception:
+        return False
+
+    # Fallback legacy (anciens comptes)
+    try:
+        import hashlib
+        import base64
+
+        digest = hashlib.sha256(plain_password.encode("utf-8")).digest()
+        legacy_prepared = base64.b64encode(digest)
+        return bcrypt.checkpw(legacy_prepared, hashed_password.encode("utf-8"))
+    except Exception:
+        return False
 
 
 # ============ GESTION DES TOKENS JWT ============
@@ -47,15 +51,36 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 def create_access_token(data: dict) -> str:
     """Crée un token JWT"""
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(
+    expire = datetime.now(timezone.utc) + timedelta(
         minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
     )
-    to_encode.update({"exp": expire})
+    to_encode.update({"exp": expire, "type": "access"})
     return jwt.encode(
         to_encode,
         settings.SECRET_KEY,
         algorithm=settings.ALGORITHM
     )
+
+
+def create_refresh_token(data: dict) -> str:
+    """Crée un refresh token JWT."""
+    to_encode = data.copy()
+    expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    to_encode.update({"exp": expire, "type": "refresh"})
+    return jwt.encode(
+        to_encode,
+        settings.REFRESH_SECRET_KEY,
+        algorithm=settings.ALGORITHM
+    )
+
+
+def create_token_pair(data: dict) -> dict:
+    """Retourne access + refresh token."""
+    return {
+        "access_token": create_access_token(data),
+        "refresh_token": create_refresh_token(data),
+        "token_type": "bearer",
+    }
 
 
 def verify_token(token: str):
@@ -66,6 +91,24 @@ def verify_token(token: str):
             settings.SECRET_KEY,
             algorithms=[settings.ALGORITHM]
         )
+        token_type = payload.get("type")
+        if token_type and token_type != "access":
+            return None
+        return payload
+    except JWTError:
+        return None
+
+
+def verify_refresh_token(token: str):
+    """Décode et vérifie un refresh token JWT."""
+    try:
+        payload = jwt.decode(
+            token,
+            settings.REFRESH_SECRET_KEY,
+            algorithms=[settings.ALGORITHM]
+        )
+        if payload.get("type") != "refresh":
+            return None
         return payload
     except JWTError:
         return None

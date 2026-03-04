@@ -30,9 +30,12 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 /** Stockage tokens */
 const TokenStorage = {
   getAccess:  ()      => localStorage.getItem('access_token'),
+  getRefresh: ()      => localStorage.getItem('refresh_token'),
   setAccess:  (token) => localStorage.setItem('access_token', token),
+  setRefresh: (token) => localStorage.setItem('refresh_token', token),
   clear: () => {
     localStorage.removeItem('access_token');
+    localStorage.removeItem('refresh_token');
     localStorage.removeItem('user');
   },
 };
@@ -95,12 +98,34 @@ api.interceptors.response.use(
       return api(originalRequest);
     }
 
-    // ── 2. Token expiré (401) → déconnexion directe ──
-    //    (pas de refresh token dans ce backend)
+    // ── 2. Token expiré (401) → tentative refresh token ──
     if (
       error.response?.status === 401 &&
       !originalRequest._retry
     ) {
+      const refreshToken = TokenStorage.getRefresh();
+      if (refreshToken) {
+        originalRequest._retry = true;
+        try {
+          const refreshResponse = await axios.post(
+            `${API_BASE_URL}/refresh`,
+            { refresh_token: refreshToken },
+            { timeout: TIMEOUT }
+          );
+          const { access_token, refresh_token } = refreshResponse.data || {};
+          if (!access_token) {
+            throw new Error('Refresh response missing access token');
+          }
+          TokenStorage.setAccess(access_token);
+          if (refresh_token) TokenStorage.setRefresh(refresh_token);
+          originalRequest.headers.Authorization = `Bearer ${access_token}`;
+          return api(originalRequest);
+        } catch (_refreshError) {
+          redirectToLogin();
+          return Promise.reject(error);
+        }
+      }
+
       redirectToLogin();
       return Promise.reject(error);
     }
@@ -175,8 +200,9 @@ export const authService = {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     });
 
-    const { access_token } = response.data;
+    const { access_token, refresh_token } = response.data;
     if (access_token) TokenStorage.setAccess(access_token);
+    if (refresh_token) TokenStorage.setRefresh(refresh_token);
 
     return response.data;
   },
@@ -216,11 +242,8 @@ export const roomService = {
   /** Créer une salle → POST /api/rooms/ */
   createRoom: async (roomData) => {
     const response = await api.post('/rooms/', {
-      name:             roomData.name,
-      description:      roomData.description      || '',
-      room_type:        roomData.room_type         || 'meeting',
-      max_participants: roomData.max_participants  || 10,
-      is_private:       roomData.is_private        || false,
+      name:        roomData.name,
+      description: roomData.description || '',
     });
     return response.data;
   },

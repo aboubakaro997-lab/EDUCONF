@@ -22,6 +22,51 @@ def format_seconds(total_seconds: int) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
+def _leave_room_and_handle_host(
+    room_id: int,
+    current_user: models.User,
+    db: Session,
+):
+    participant = db.query(models.Participant).filter(
+        models.Participant.room_id == room_id,
+        models.Participant.user_id == current_user.id,
+    ).first()
+
+    if not participant:
+        return {"message": "Vous n'etes pas dans cette salle"}
+
+    if not participant.is_host:
+        db.delete(participant)
+        db.commit()
+        return {"message": "Vous avez quitte la salle"}
+
+    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    if not room:
+        return {"message": "Salle introuvable"}
+
+    successor = (
+        db.query(models.Participant)
+        .filter(
+            models.Participant.room_id == room_id,
+            models.Participant.user_id != current_user.id,
+        )
+        .order_by(models.Participant.joined_at.asc())
+        .first()
+    )
+
+    if successor:
+        successor.is_host = True
+        room.host_id = successor.user_id
+        db.delete(participant)
+        db.commit()
+        return {"message": "Vous avez quitte la salle. Le role d'hote a ete transfere."}
+
+    db.delete(participant)
+    db.delete(room)
+    db.commit()
+    return {"message": "Vous avez quitte la salle. Salle supprimee (dernier participant)."}
+
+
 @router.get("/", response_model=List[schemas.RoomResponse])
 def list_rooms(
     db: Session = Depends(get_db),
@@ -181,20 +226,12 @@ def leave_room(
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """Quitter une salle."""
-    participant = db.query(models.Participant).filter(
-        models.Participant.room_id == room_id,
-        models.Participant.user_id == current_user.id,
-    ).first()
-
-    if not participant:
+    result = _leave_room_and_handle_host(room_id=room_id, current_user=current_user, db=db)
+    if result.get("message") == "Salle introuvable":
+        raise HTTPException(status_code=404, detail="Salle introuvable")
+    if result.get("message") == "Vous n'etes pas dans cette salle":
         raise HTTPException(status_code=404, detail="Vous n'etes pas dans cette salle")
-
-    if participant.is_host:
-        raise HTTPException(status_code=400, detail="L'hote ne peut pas quitter sa propre salle")
-
-    db.delete(participant)
-    db.commit()
-    return {"message": "Vous avez quitte la salle"}
+    return result
 
 
 @router.post("/{room_id}/leave")
@@ -204,20 +241,7 @@ def leave_room_post(
     current_user: models.User = Depends(auth.get_current_user),
 ):
     """Compat frontend: quitter via POST /rooms/{id}/leave."""
-    participant = db.query(models.Participant).filter(
-        models.Participant.room_id == room_id,
-        models.Participant.user_id == current_user.id,
-    ).first()
-
-    if not participant:
-        return {"message": "Vous n'etes pas dans cette salle"}
-
-    if participant.is_host:
-        raise HTTPException(status_code=400, detail="L'hote ne peut pas quitter sa propre salle")
-
-    db.delete(participant)
-    db.commit()
-    return {"message": "Vous avez quitte la salle"}
+    return _leave_room_and_handle_host(room_id=room_id, current_user=current_user, db=db)
 
 
 @router.get("/{room_id}/attendance", response_model=schemas.AttendanceReportResponse)
