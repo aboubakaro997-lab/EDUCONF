@@ -13,6 +13,7 @@ from .config import settings
 from .database import engine
 from .routes import auth as auth_routes
 from .routes import messages, rooms
+from .routes import sfu
 
 
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
@@ -52,6 +53,7 @@ def startup_check() -> None:
 
 
 fastapi_app.include_router(auth_routes.router)
+fastapi_app.include_router(sfu.router)
 fastapi_app.include_router(rooms.router, prefix="/api", tags=["Rooms"])
 fastapi_app.include_router(messages.router, prefix="/api", tags=["Messages"])
 

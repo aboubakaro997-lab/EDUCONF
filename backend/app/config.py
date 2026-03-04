@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     RATE_LIMIT_REGISTER_WINDOW_SECONDS: int = 600
     REDIS_URL: Optional[str] = None
     RATE_LIMIT_REDIS_PREFIX: str = "educonf:ratelimit"
+    LIVEKIT_URL: str = "ws://localhost:7880"
+    LIVEKIT_API_KEY: Optional[str] = None
+    LIVEKIT_API_SECRET: Optional[str] = None
 
     MAIL_SERVER: Optional[str] = None
     MAIL_PORT: Optional[int] = None
@@ -76,6 +79,9 @@ class Settings(BaseSettings):
 
         if not self.allowed_origins:
             raise ValueError("ALLOWED_ORIGINS must be set in production")
+
+        if not self.LIVEKIT_API_KEY or not self.LIVEKIT_API_SECRET:
+            raise ValueError("LIVEKIT_API_KEY and LIVEKIT_API_SECRET must be set in production")
 
 
 settings = Settings()

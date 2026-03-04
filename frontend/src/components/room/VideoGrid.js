@@ -124,7 +124,12 @@ const VideoGrid = ({
 
   // Trouver un participant par peerId
   const getParticipant = (peerId) =>
-    participants.find(p => p.sid === peerId || p.socketId === peerId);
+    participants.find(
+      (p) =>
+        p.sid === peerId ||
+        p.socketId === peerId ||
+        String(p.userId) === String(peerId)
+    );
 
   if (remoteStreams.length === 0 && !localStream) {
     return (

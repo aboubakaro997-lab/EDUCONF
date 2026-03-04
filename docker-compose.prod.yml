@@ -24,6 +24,23 @@ services:
       timeout: 3s
       retries: 10
 
+  livekit:
+    image: livekit/livekit-server:latest
+    restart: unless-stopped
+    command:
+      - --dev
+      - --bind
+      - 0.0.0.0
+      - --keys
+      - "${LIVEKIT_API_KEY}:${LIVEKIT_API_SECRET}"
+    ports:
+      - "7880:7880"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:7880/"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
   backend:
     build:
       context: ./backend
@@ -45,10 +62,15 @@ services:
       RATE_LIMIT_REGISTER_ATTEMPTS: ${RATE_LIMIT_REGISTER_ATTEMPTS}
       RATE_LIMIT_REGISTER_WINDOW_SECONDS: ${RATE_LIMIT_REGISTER_WINDOW_SECONDS}
       REDIS_URL: ${REDIS_URL}
+      LIVEKIT_URL: ${LIVEKIT_URL}
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      livekit:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
@@ -62,6 +84,7 @@ services:
       dockerfile: Dockerfile
       args:
         REACT_APP_ICE_SERVERS: ${REACT_APP_ICE_SERVERS}
+        REACT_APP_LIVEKIT_URL: ${REACT_APP_LIVEKIT_URL}
     restart: unless-stopped
     depends_on:
       backend:

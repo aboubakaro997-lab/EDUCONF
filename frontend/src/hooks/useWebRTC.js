@@ -1,27 +1,19 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import SimplePeer from 'simple-peer';
+import {
+  Room as LiveKitRoom,
+  RoomEvent,
+  createLocalAudioTrack,
+  createLocalVideoTrack,
+  createLocalScreenTracks,
+} from 'livekit-client';
 
-const DEFAULT_ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
-];
+const API_BASE_URL =
+  process.env.REACT_APP_API_URL ||
+  (process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000/api');
 
-const getIceServers = () => {
-  const raw = process.env.REACT_APP_ICE_SERVERS;
-  if (!raw) return DEFAULT_ICE_SERVERS;
-
-  try {
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed;
-    }
-  } catch (err) {
-    debugWarn('REACT_APP_ICE_SERVERS invalide, fallback STUN par defaut');
-  }
-  return DEFAULT_ICE_SERVERS;
-};
+const DEFAULT_LIVEKIT_URL =
+  process.env.REACT_APP_LIVEKIT_URL ||
+  (process.env.NODE_ENV === 'production' ? '' : 'ws://localhost:7880');
 
 const DEBUG_WEBRTC = process.env.NODE_ENV === 'development';
 const debugLog = (...args) => {
@@ -32,22 +24,21 @@ const debugWarn = (...args) => {
 };
 
 const useWebRTC = (socket, roomId, userName, userId = null) => {
-  const localStreamRef   = useRef(null);
-  const screenStreamRef  = useRef(null);  // ✅ Ajout ref écran
-  const peersRef         = useRef({});
+  const livekitRoomRef = useRef(null);
+  const localAudioTrackRef = useRef(null);
+  const localVideoTrackRef = useRef(null);
+  const screenTrackRef = useRef(null);
 
-  const [localStream,     setLocalStream]     = useState(null);
-  const [remoteStreams,   setRemoteStreams]    = useState([]);
-  const [isAudioEnabled,  setIsAudioEnabled]  = useState(true);
-  const [isVideoEnabled,  setIsVideoEnabled]  = useState(true);
+  const [localStream, setLocalStream] = useState(null);
+  const [remoteStreams, setRemoteStreams] = useState([]);
+  const [isAudioEnabled, setIsAudioEnabled] = useState(true);
+  const [isVideoEnabled, setIsVideoEnabled] = useState(true);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
-  const [participants,    setParticipants]    = useState([]);
-  const [mediaError,      setMediaError]      = useState(null);
-  const iceServers = useRef(getIceServers());
+  const [participants, setParticipants] = useState([]);
+  const [mediaError, setMediaError] = useState(null);
 
   const normalizeParticipants = useCallback((list = []) => {
     if (!Array.isArray(list)) return [];
-
     const currentSocketId = socket?.id;
     const map = new Map();
 
@@ -62,521 +53,387 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
     return Array.from(map.values());
   }, [socket?.id, userId]);
 
-  const addTrackToPeers = useCallback((track) => {
-    Object.values(peersRef.current).forEach((peer) => {
-      try {
-        const sender = peer._pc?.getSenders().find((s) => s.track?.kind === track.kind);
-        if (sender) {
-          sender.replaceTrack(track);
-        } else if (localStreamRef.current) {
-          peer.addTrack(track, localStreamRef.current);
-        }
-      } catch (err) {
-        debugWarn(`⚠️ Impossible d'ajouter la piste ${track.kind}:`, err);
+  const refreshLocalStream = useCallback(() => {
+    const mediaTracks = [];
+    const audioTrack = localAudioTrackRef.current;
+    const videoTrack = screenTrackRef.current || localVideoTrackRef.current;
+
+    if (audioTrack && !audioTrack.isMuted) {
+      mediaTracks.push(audioTrack.mediaStreamTrack);
+    }
+    if (videoTrack && !videoTrack.isMuted) {
+      mediaTracks.push(videoTrack.mediaStreamTrack);
+    }
+
+    setLocalStream(mediaTracks.length ? new MediaStream(mediaTracks) : null);
+  }, []);
+
+  const upsertRemoteParticipantStream = useCallback((participant) => {
+    const tracks = [];
+    participant.trackPublications.forEach((publication) => {
+      if (!publication?.isSubscribed || !publication.track) return;
+      const kind = publication.track.kind;
+      if (kind !== 'audio' && kind !== 'video') return;
+      if (publication.track.mediaStreamTrack) {
+        tracks.push(publication.track.mediaStreamTrack);
       }
+    });
+
+    const peerId = participant.identity || participant.sid;
+    if (!peerId) return;
+
+    if (!tracks.length) {
+      setRemoteStreams((prev) => prev.filter((s) => s.peerId !== peerId));
+      return;
+    }
+
+    const stream = new MediaStream(tracks);
+    setRemoteStreams((prev) => {
+      const idx = prev.findIndex((s) => s.peerId === peerId);
+      const nextItem = {
+        peerId,
+        stream,
+        userName: participant.name || participant.identity || 'Participant',
+      };
+      if (idx === -1) return [...prev, nextItem];
+      const copy = [...prev];
+      copy[idx] = nextItem;
+      return copy;
     });
   }, []);
 
-  // ============================================================
-  //  1. INITIALISATION DU FLUX LOCAL
-  // ============================================================
-  const initLocalStream = useCallback(async () => {
+  const removeRemoteParticipant = useCallback((participant) => {
+    const peerId = participant?.identity || participant?.sid;
+    if (!peerId) return;
+    setRemoteStreams((prev) => prev.filter((s) => s.peerId !== peerId));
+  }, []);
+
+  const fetchSfuToken = useCallback(async () => {
+    if (!roomId) throw new Error('roomId manquant pour SFU');
+    const accessToken = localStorage.getItem('access_token');
+    if (!accessToken) throw new Error('Token d authentification manquant');
+
+    const response = await fetch(`${API_BASE_URL}/sfu/token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ room_id: Number(roomId) }),
+    });
+
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload?.detail || 'Impossible d obtenir le token SFU');
+    }
+
+    return response.json();
+  }, [roomId]);
+
+  const ensureLocalTracksPublished = useCallback(async (livekitRoom) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          facingMode: 'user',
-          frameRate: { ideal: 30 }
-        },
-        audio: {
+      if (!localAudioTrackRef.current) {
+        localAudioTrackRef.current = await createLocalAudioTrack({
           echoCancellation: true,
           noiseSuppression: true,
-          sampleRate: 44100
-        }
-      });
+        });
+        await livekitRoom.localParticipant.publishTrack(localAudioTrackRef.current);
+      }
 
-      localStreamRef.current = stream;
-      setLocalStream(stream);
+      if (!localVideoTrackRef.current) {
+        localVideoTrackRef.current = await createLocalVideoTrack({
+          resolution: { width: 1280, height: 720, frameRate: 30 },
+          facingMode: 'user',
+        });
+        await livekitRoom.localParticipant.publishTrack(localVideoTrackRef.current);
+      }
+
+      setIsAudioEnabled(!localAudioTrackRef.current.isMuted);
+      setIsVideoEnabled(!localVideoTrackRef.current.isMuted);
       setMediaError(null);
-      debugLog('📹 Flux local initialisé');
-      return stream;
-
+      refreshLocalStream();
     } catch (err) {
-      console.error('❌ Erreur accès caméra:', err);
-
-      // ── Fallback : audio seulement ──
-      try {
-        const audioOnly = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true
-          }
-        });
-
-        localStreamRef.current = audioOnly;
-        setLocalStream(audioOnly);
-        setIsVideoEnabled(false);
-        setMediaError('📵 Caméra non disponible — mode audio uniquement');
-        debugWarn('⚠️ Fallback audio seulement');
-        return audioOnly;
-
-      } catch (audioErr) {
-        const msg = getMediaErrorMessage(audioErr);
-        setMediaError(msg);
-        console.error('❌ Erreur accès audio:', audioErr);
-        return null;
-      }
+      setMediaError(getMediaErrorMessage(err));
+      console.error('Erreur initialisation tracks locales:', err);
     }
-  }, []);
+  }, [refreshLocalStream]);
 
-  // ============================================================
-  //  2. SUPPRIMER UN PEER  (déclaré AVANT createPeer)
-  // ============================================================
-  const removePeer = useCallback((peerId) => {
-    if (peersRef.current[peerId]) {
-      peersRef.current[peerId].destroy();
-      delete peersRef.current[peerId];
-    }
-    setRemoteStreams(prev => prev.filter(s => s.peerId !== peerId));
-    setParticipants(prev => prev.filter(p => p.sid !== peerId));
-    debugLog(`👋 Peer supprimé : ${peerId}`);
-  }, []);
+  const connectLiveKit = useCallback(async () => {
+    if (livekitRoomRef.current) return livekitRoomRef.current;
 
-  // ============================================================
-  //  3. CRÉER UN PEER
-  // ============================================================
-  const createPeer = useCallback((targetId, isInitiator, stream = null) => {
-    // Détruire l'ancien peer s'il existe
-    if (peersRef.current[targetId]) {
-      peersRef.current[targetId].destroy();
-      delete peersRef.current[targetId];
+    const tokenPayload = await fetchSfuToken();
+    const livekitUrl = tokenPayload.livekit_url || DEFAULT_LIVEKIT_URL;
+    if (!livekitUrl) {
+      throw new Error('LIVEKIT URL manquante');
     }
 
-    debugLog(`🔗 Création peer ${isInitiator ? '(initiateur)' : '(récepteur)'} → ${targetId}`);
-
-    const peerOptions = {
-      initiator: isInitiator,
-      trickle: true,
-      config: { iceServers: iceServers.current },
-      // ✅ Options de performance
-      offerOptions: {
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: true,
-      }
-    };
-
-    if (stream) {
-      peerOptions.stream = stream;
-    }
-
-    const peer = new SimplePeer(peerOptions);
-
-    // ── Signalement (offre / réponse / ICE) ──
-    peer.on('signal', (signalData) => {
-      if (!socket?.connected) return;
-
-      if (signalData.type === 'offer') {
-        socket.emit('webrtc_offer', { targetId, offer: signalData, roomId });
-        debugLog(`📤 Offre → ${targetId}`);
-
-      } else if (signalData.type === 'answer') {
-        socket.emit('webrtc_answer', { targetId, answer: signalData, roomId });
-        debugLog(`📤 Réponse → ${targetId}`);
-
-      } else if (signalData.candidate) {
-        socket.emit('ice_candidate', { targetId, candidate: signalData, roomId });
-      }
+    const room = new LiveKitRoom({
+      adaptiveStream: true,
+      dynacast: true,
     });
 
-    // ── Réception du flux distant ──
-    peer.on('stream', (remoteStream) => {
-      debugLog(`📡 Flux reçu de ${targetId}`);
-      setRemoteStreams(prev => {
-        const exists = prev.find(s => s.peerId === targetId);
-        if (exists) {
-          return prev.map(s =>
-            s.peerId === targetId ? { ...s, stream: remoteStream } : s
-          );
+    room
+      .on(RoomEvent.TrackSubscribed, (_track, _pub, participant) => {
+        upsertRemoteParticipantStream(participant);
+      })
+      .on(RoomEvent.TrackUnsubscribed, (_track, _pub, participant) => {
+        upsertRemoteParticipantStream(participant);
+      })
+      .on(RoomEvent.ParticipantConnected, (participant) => {
+        upsertRemoteParticipantStream(participant);
+      })
+      .on(RoomEvent.ParticipantDisconnected, (participant) => {
+        removeRemoteParticipant(participant);
+      })
+      .on(RoomEvent.LocalTrackUnpublished, (publication) => {
+        if (publication?.source === 'screen_share') {
+          screenTrackRef.current = null;
+          setIsScreenSharing(false);
+          refreshLocalStream();
         }
-        return [...prev, { peerId: targetId, stream: remoteStream }];
       });
+
+    await room.connect(livekitUrl, tokenPayload.token);
+    livekitRoomRef.current = room;
+
+    await ensureLocalTracksPublished(room);
+
+    room.remoteParticipants.forEach((participant) => {
+      upsertRemoteParticipantStream(participant);
     });
 
-    // ── Connexion établie ──
-    peer.on('connect', () => {
-      debugLog(`✅ Connexion P2P établie avec ${targetId}`);
-    });
+    debugLog('Connecte au SFU LiveKit room=', tokenPayload.room_name, 'url=', livekitUrl);
+    return room;
+  }, [
+    ensureLocalTracksPublished,
+    fetchSfuToken,
+    refreshLocalStream,
+    removeRemoteParticipant,
+    upsertRemoteParticipantStream,
+  ]);
 
-    // ── Erreur ──
-    peer.on('error', (err) => {
-      console.error(`❌ Erreur peer ${targetId}:`, err.message);
-      removePeer(targetId);
-    });
-
-    // ── Fermeture ──
-    peer.on('close', () => {
-      debugLog(`🔒 Peer fermé : ${targetId}`);
-      removePeer(targetId);
-    });
-
-    peersRef.current[targetId] = peer;
-    return peer;
-
-  }, [socket, roomId, removePeer]);
-
-  const ensurePeerConnections = useCallback((stream = null) => {
-    if (!socket?.id || !Array.isArray(participants)) return;
-
-    participants.forEach((p) => {
-      if (!p?.sid || p.sid === socket.id) return;
-      if (!peersRef.current[p.sid]) {
-        createPeer(p.sid, true, stream || localStreamRef.current || null);
-      }
-    });
-  }, [socket?.id, participants, createPeer]);
-
-  const refreshAllPeerConnections = useCallback((stream = null) => {
-    if (!socket?.id || !Array.isArray(participants)) return;
-
-    const effectiveStream = stream || localStreamRef.current || null;
-    participants.forEach((p) => {
-      if (!p?.sid || p.sid === socket.id) return;
-      removePeer(p.sid);
-      createPeer(p.sid, true, effectiveStream);
-    });
-  }, [socket?.id, participants, removePeer, createPeer]);
-
-  // ============================================================
-  //  4. REJOINDRE LA SALLE
-  // ============================================================
-  const joinRoom = useCallback(async () => {
-    if (!socket?.connected) {
-      debugWarn('⚠️ Socket non connecté');
-      return;
+  const disconnectLiveKit = useCallback(() => {
+    const room = livekitRoomRef.current;
+    if (room) {
+      room.disconnect();
+      livekitRoomRef.current = null;
     }
 
-    // Tente d'initialiser les médias sans bloquer l'entrée en salle.
-    let stream = localStreamRef.current;
-    if (!stream) {
-      stream = await initLocalStream();
-    }
-
-    socket.emit('join_room', { roomId, userName, userId }, (response) => {
-      if (response?.error) {
-        console.error('❌ Erreur join_room:', response.error);
-        return;
-      }
-
-      debugLog(`✅ Salle "${roomId}" rejointe, participants:`, response?.participants);
-
-      if (response?.participants) {
-        const normalized = normalizeParticipants(response.participants);
-        setParticipants(normalized);
-
-        // Initier connexion avec chaque participant existant
-        // IMPORTANT: Utiliser participant.sid (socket ID) pour WebRTC
-        normalized.forEach((participant) => {
-          if (participant.sid !== socket.id) {
-            debugLog(`🔗 Création peer avec ${participant.sid} (participant existant)`);
-            createPeer(participant.sid, true, stream || null);
-          }
-        });
-        setTimeout(() => ensurePeerConnections(stream || null), 250);
-      }
+    [screenTrackRef.current, localVideoTrackRef.current, localAudioTrackRef.current].forEach((track) => {
+      if (!track) return;
+      try {
+        track.stop();
+      } catch (_) {}
     });
-  }, [socket, roomId, userName, userId, initLocalStream, createPeer, normalizeParticipants, ensurePeerConnections]);
 
-  // ============================================================
-  //  5. QUITTER LA SALLE
-  // ============================================================
-  const leaveRoom = useCallback(() => {
-    // Notifier le serveur
-    socket?.emit('leave_room', { roomId });
+    screenTrackRef.current = null;
+    localVideoTrackRef.current = null;
+    localAudioTrackRef.current = null;
 
-    // Fermer tous les peers
-    Object.keys(peersRef.current).forEach(peerId => {
-      peersRef.current[peerId].destroy();
-    });
-    peersRef.current = {};
-
-    // Arrêter flux local
-    localStreamRef.current?.getTracks().forEach(t => t.stop());
-    localStreamRef.current = null;
-
-    // Arrêter partage écran
-    screenStreamRef.current?.getTracks().forEach(t => t.stop());
-    screenStreamRef.current = null;
-
-    // Reset états
     setLocalStream(null);
     setRemoteStreams([]);
-    setParticipants([]);
     setIsScreenSharing(false);
-    setMediaError(null);
-
-    debugLog(`🚪 Salle "${roomId}" quittée`);
-  }, [socket, roomId]);
-
-  // ============================================================
-  //  6. TOGGLE AUDIO
-  // ============================================================
-  const toggleAudio = useCallback(async () => {
-    let audioTrack = localStreamRef.current?.getAudioTracks()[0];
-
-    if (!audioTrack) {
-      try {
-        const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioTrack = audioStream.getAudioTracks()[0];
-
-        if (!localStreamRef.current) {
-          localStreamRef.current = new MediaStream();
-        }
-
-        localStreamRef.current.addTrack(audioTrack);
-        setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
-        setIsAudioEnabled(true);
-        setMediaError(null);
-        addTrackToPeers(audioTrack);
-        ensurePeerConnections(localStreamRef.current);
-        setTimeout(() => refreshAllPeerConnections(localStreamRef.current), 200);
-        debugLog('🎤 Piste audio ajoutée dynamiquement');
-      } catch (err) {
-        setMediaError(getMediaErrorMessage(err));
-        console.error("❌ Impossible d'activer le micro:", err);
-        return;
-      }
-    } else {
-      audioTrack.enabled = !audioTrack.enabled;
-      setIsAudioEnabled(audioTrack.enabled);
-      debugLog(`🎤 Audio : ${audioTrack.enabled ? 'ON' : 'OFF'}`);
-    }
-
-    socket?.emit('media_state_change', {
-      roomId,
-      audio: audioTrack.enabled,
-      video: isVideoEnabled
-    });
-  }, [socket, roomId, isVideoEnabled, addTrackToPeers, ensurePeerConnections, refreshAllPeerConnections]);
-
-  // ============================================================
-  //  7. TOGGLE VIDÉO
-  // ============================================================
-  const toggleVideo = useCallback(async () => {
-    let videoTrack = localStreamRef.current?.getVideoTracks()[0];
-
-    if (!videoTrack) {
-      try {
-        const videoStream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }
-        });
-        videoTrack = videoStream.getVideoTracks()[0];
-
-        if (!localStreamRef.current) {
-          localStreamRef.current = new MediaStream();
-        }
-
-        localStreamRef.current.addTrack(videoTrack);
-        setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
-        setIsVideoEnabled(true);
-        setMediaError(null);
-        addTrackToPeers(videoTrack);
-        ensurePeerConnections(localStreamRef.current);
-        setTimeout(() => refreshAllPeerConnections(localStreamRef.current), 200);
-        debugLog('📷 Piste vidéo ajoutée dynamiquement');
-      } catch (err) {
-        setMediaError(getMediaErrorMessage(err));
-        console.error("❌ Impossible d'activer la caméra:", err);
-        return;
-      }
-    } else {
-      videoTrack.enabled = !videoTrack.enabled;
-      setIsVideoEnabled(videoTrack.enabled);
-      debugLog(`📷 Vidéo : ${videoTrack.enabled ? 'ON' : 'OFF'}`);
-    }
-
-    socket?.emit('media_state_change', {
-      roomId,
-      audio: isAudioEnabled,
-      video: videoTrack.enabled
-    });
-  }, [socket, roomId, isAudioEnabled, addTrackToPeers, ensurePeerConnections, refreshAllPeerConnections]);
-
-  // ============================================================
-  //  8. PARTAGE D'ÉCRAN  ✅ Corrigé (boucle infinie résolue)
-  // ============================================================
-  const stopScreenShare = useCallback(() => {
-    screenStreamRef.current?.getTracks().forEach(t => t.stop());
-    screenStreamRef.current = null;
-
-    // Remettre la caméra dans tous les peers
-    const cameraTrack = localStreamRef.current?.getVideoTracks()[0];
-    if (cameraTrack) {
-      Object.values(peersRef.current).forEach(peer => {
-        const sender = peer._pc?.getSenders().find(s => s.track?.kind === 'video');
-        sender?.replaceTrack(cameraTrack);
-      });
-    }
-
-    setIsScreenSharing(false);
-    debugLog('🖥️ Partage écran arrêté');
   }, []);
 
-  const toggleScreenShare = useCallback(async () => {
-    if (isScreenSharing) {
-      stopScreenShare();
+  const emitMediaState = useCallback((audio, video) => {
+    socket?.emit('media_state_change', {
+      roomId,
+      audio,
+      video,
+    });
+  }, [socket, roomId]);
+
+  const joinRoom = useCallback(async () => {
+    if (!socket?.connected) {
+      debugWarn('Socket non connecte');
       return;
     }
 
+    await new Promise((resolve) => {
+      socket.emit('join_room', { roomId, userName, userId }, (response) => {
+        if (response?.error) {
+          console.error('Erreur join_room:', response.error);
+          setMediaError(response.error);
+          return resolve();
+        }
+
+        setParticipants(normalizeParticipants(response.participants || []));
+        resolve();
+      });
+    });
+
     try {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: { cursor: 'always', displaySurface: 'monitor' },
-        audio: false
-      });
-
-      screenStreamRef.current = screenStream;
-      const screenTrack = screenStream.getVideoTracks()[0];
-
-      // Remplacer piste vidéo dans tous les peers
-      Object.values(peersRef.current).forEach(peer => {
-        const sender = peer._pc?.getSenders().find(s => s.track?.kind === 'video');
-        sender?.replaceTrack(screenTrack);
-      });
-
-      // ✅ Utiliser stopScreenShare (pas toggleScreenShare) pour éviter la boucle
-      screenTrack.onended = stopScreenShare;
-      setIsScreenSharing(true);
-      debugLog('🖥️ Partage écran démarré');
-
+      await connectLiveKit();
+      emitMediaState(isAudioEnabled, isVideoEnabled);
     } catch (err) {
-      console.error('❌ Erreur partage écran:', err);
+      console.error('Erreur connexion SFU:', err);
+      setMediaError(getMediaErrorMessage(err));
     }
-  }, [isScreenSharing, stopScreenShare]);
+  }, [
+    socket,
+    roomId,
+    userName,
+    userId,
+    normalizeParticipants,
+    connectLiveKit,
+    emitMediaState,
+    isAudioEnabled,
+    isVideoEnabled,
+  ]);
 
-  // ============================================================
-  //  9. ÉVÉNEMENTS SOCKET
-  // ============================================================
+  const leaveRoom = useCallback(() => {
+    socket?.emit('leave_room', { roomId });
+    disconnectLiveKit();
+    setParticipants([]);
+    setMediaError(null);
+  }, [socket, roomId, disconnectLiveKit]);
+
+  const toggleAudio = useCallback(async () => {
+    const room = livekitRoomRef.current;
+    if (!room) return;
+
+    try {
+      if (!localAudioTrackRef.current) {
+        localAudioTrackRef.current = await createLocalAudioTrack({
+          echoCancellation: true,
+          noiseSuppression: true,
+        });
+        await room.localParticipant.publishTrack(localAudioTrackRef.current);
+      }
+
+      const track = localAudioTrackRef.current;
+      if (track.isMuted) {
+        await track.unmute();
+        setIsAudioEnabled(true);
+        emitMediaState(true, isVideoEnabled);
+      } else {
+        await track.mute();
+        setIsAudioEnabled(false);
+        emitMediaState(false, isVideoEnabled);
+      }
+      refreshLocalStream();
+    } catch (err) {
+      console.error('Impossible de basculer audio:', err);
+      setMediaError(getMediaErrorMessage(err));
+    }
+  }, [emitMediaState, isVideoEnabled, refreshLocalStream]);
+
+  const toggleVideo = useCallback(async () => {
+    const room = livekitRoomRef.current;
+    if (!room) return;
+
+    try {
+      if (!localVideoTrackRef.current) {
+        localVideoTrackRef.current = await createLocalVideoTrack({
+          resolution: { width: 1280, height: 720, frameRate: 30 },
+          facingMode: 'user',
+        });
+        await room.localParticipant.publishTrack(localVideoTrackRef.current);
+      }
+
+      const track = localVideoTrackRef.current;
+      if (track.isMuted) {
+        await track.unmute();
+        setIsVideoEnabled(true);
+        emitMediaState(isAudioEnabled, true);
+      } else {
+        await track.mute();
+        setIsVideoEnabled(false);
+        emitMediaState(isAudioEnabled, false);
+      }
+      refreshLocalStream();
+    } catch (err) {
+      console.error('Impossible de basculer video:', err);
+      setMediaError(getMediaErrorMessage(err));
+    }
+  }, [emitMediaState, isAudioEnabled, refreshLocalStream]);
+
+  const toggleScreenShare = useCallback(async () => {
+    const room = livekitRoomRef.current;
+    if (!room) return;
+
+    try {
+      if (screenTrackRef.current) {
+        await room.localParticipant.unpublishTrack(screenTrackRef.current);
+        screenTrackRef.current.stop();
+        screenTrackRef.current = null;
+        setIsScreenSharing(false);
+        refreshLocalStream();
+        return;
+      }
+
+      const screenTracks = await createLocalScreenTracks({ audio: false });
+      const videoScreenTrack = screenTracks.find((t) => t.kind === 'video');
+      if (!videoScreenTrack) return;
+
+      await room.localParticipant.publishTrack(videoScreenTrack);
+      screenTrackRef.current = videoScreenTrack;
+      setIsScreenSharing(true);
+      refreshLocalStream();
+
+      videoScreenTrack.mediaStreamTrack.onended = async () => {
+        try {
+          await room.localParticipant.unpublishTrack(videoScreenTrack);
+        } catch (_) {}
+        screenTrackRef.current = null;
+        setIsScreenSharing(false);
+        refreshLocalStream();
+      };
+    } catch (err) {
+      console.error('Erreur partage ecran:', err);
+      setMediaError(getMediaErrorMessage(err));
+    }
+  }, [refreshLocalStream]);
+
   useEffect(() => {
     if (!socket) return;
 
-    // ── Nouveau participant ──
-    const onUserJoined = ({ userId, userName: name, participants: p }) => {
-      debugLog(`👤 UserJoined reçu: userId=${userId} (type: ${typeof userId}), name=${name}`);
-      debugLog(`   Participants dans l'event:`, p);
-      debugLog(`   Mon socket.id:`, socket.id);
-      
-      const normalized = normalizeParticipants(p || []);
-      debugLog(`   Participants normalisés:`, normalized);
-
-      setParticipants(normalized);
-
-      // IMPORTANT: Le backend envoie userId = sid (socket ID)
-      // Chercher le participant par son sid
-      const newParticipant = normalized.find((p) => p.sid === userId);
-      debugLog(`   Participant trouvé par sid:`, newParticipant);
-
-      if (newParticipant && newParticipant.sid !== socket.id) {
-        debugLog(`🔗 Création peer avec ${newParticipant.sid} (nouveau participant)`);
-        createPeer(newParticipant.sid, false, localStreamRef.current || null);
-        setTimeout(() => ensurePeerConnections(localStreamRef.current || null), 150);
-      } else {
-        debugLog(`   ⚠️ Pas de nouveau participant à connecter (userId=${userId}, socket.id=${socket.id})`);
-      }
+    const onUserJoined = ({ participants: list }) => {
+      setParticipants(normalizeParticipants(list || []));
     };
-
-    // ── Participant parti ──
-    const onUserLeft = ({ userId, participants: p }) => {
-      debugLog(`👋 Particiant parti: userId=${userId}`);
-      const normalized = normalizeParticipants(p || []);
-      setParticipants(normalized);
-
-      // Le backend envoie userId = sid du socket sortant.
-      removePeer(userId);
+    const onUserLeft = ({ participants: list }) => {
+      setParticipants(normalizeParticipants(list || []));
     };
-
-    // ── Offre WebRTC ──
-    const onOffer = ({ offer, fromId }) => {
-      debugLog(`📥 Offre reçue de ${fromId}`);
-      debugLog(`   Mes participants actuels:`, Object.keys(peersRef.current));
-
-      let peer = peersRef.current[fromId];
-      if (!peer) {
-        debugLog(`   ➕ Création nouveau peer pour l'offre`);
-        peer = createPeer(fromId, false, localStreamRef.current || null);
-      }
-      peer.signal(offer);
-    };
-
-    // ── Réponse WebRTC ──
-    const onAnswer = ({ answer, fromId }) => {
-      debugLog(`📥 Réponse reçue de ${fromId}`);
-      const peer = peersRef.current[fromId];
-      if (peer) {
-        peer.signal(answer);
-      } else {
-        debugWarn(`   ⚠️ Pas de peer trouvé pour ${fromId}`);
-      }
-    };
-
-    // ── Candidat ICE ──
-    const onIceCandidate = ({ candidate, fromId }) => {
-      const peer = peersRef.current[fromId];
-      if (peer) {
-        peer.signal(candidate);
-      } else {
-        debugWarn(`⚠️ ICE candidate reçu mais pas de peer pour ${fromId}`);
-      }
-    };
-
-    // ── Changement état média ──
-    const onMediaStateChange = ({ userId, audio, video }) => {
-      setParticipants(prev =>
-        prev.map(p => p.sid === userId ? { ...p, audio, video } : p)
+    const onMediaStateChange = ({ userId: sid, audio, video }) => {
+      setParticipants((prev) =>
+        prev.map((p) => (p.sid === sid ? { ...p, audio, video } : p))
       );
     };
-
-    const onHostForceMedia = ({ audio, video }) => {
-      if (audio === false) {
-        const audioTrack = localStreamRef.current?.getAudioTracks?.()[0];
-        if (audioTrack) audioTrack.enabled = false;
-        setIsAudioEnabled(false);
-      }
-
-      if (video === false) {
-        const videoTrack = localStreamRef.current?.getVideoTracks?.()[0];
-        if (videoTrack) videoTrack.enabled = false;
-        setIsVideoEnabled(false);
+    const onHostForceMedia = async ({ audio, video }) => {
+      try {
+        if (audio === false && localAudioTrackRef.current && !localAudioTrackRef.current.isMuted) {
+          await localAudioTrackRef.current.mute();
+          setIsAudioEnabled(false);
+        }
+        if (video === false && localVideoTrackRef.current && !localVideoTrackRef.current.isMuted) {
+          await localVideoTrackRef.current.mute();
+          setIsVideoEnabled(false);
+        }
+        refreshLocalStream();
+      } catch (err) {
+        console.error('Erreur host_force_media:', err);
       }
     };
 
-    // Abonnements
-    socket.on('user_joined',        onUserJoined);
-    socket.on('user_left',          onUserLeft);
-    socket.on('webrtc_offer',       onOffer);
-    socket.on('webrtc_answer',      onAnswer);
-    socket.on('ice_candidate',      onIceCandidate);
+    socket.on('user_joined', onUserJoined);
+    socket.on('user_left', onUserLeft);
     socket.on('media_state_change', onMediaStateChange);
-    socket.on('host_force_media',   onHostForceMedia);
+    socket.on('host_force_media', onHostForceMedia);
 
     return () => {
-      socket.off('user_joined',        onUserJoined);
-      socket.off('user_left',          onUserLeft);
-      socket.off('webrtc_offer',       onOffer);
-      socket.off('webrtc_answer',      onAnswer);
-      socket.off('ice_candidate',      onIceCandidate);
+      socket.off('user_joined', onUserJoined);
+      socket.off('user_left', onUserLeft);
       socket.off('media_state_change', onMediaStateChange);
-      socket.off('host_force_media',   onHostForceMedia);
+      socket.off('host_force_media', onHostForceMedia);
     };
-  }, [socket, createPeer, removePeer, normalizeParticipants, ensurePeerConnections]);
+  }, [normalizeParticipants, refreshLocalStream, socket]);
 
-  // ── Nettoyage destruction du composant ──
   useEffect(() => {
-    return () => { leaveRoom(); };
+    return () => {
+      leaveRoom();
+    };
   }, [leaveRoom]);
 
-  // ============================================================
-  //  RETOUR
-  // ============================================================
   return {
     localStream,
     remoteStreams,
@@ -593,19 +450,15 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
   };
 };
 
-// ── Utilitaire messages d'erreur ──
 const getMediaErrorMessage = (error) => {
   const messages = {
-    NotFoundError:         '📵 Aucun périphérique audio/vidéo détecté',
-    NotAllowedError:       '🔒 Accès refusé — autorisez caméra/micro',
-    NotReadableError:      '⚠️ Périphérique occupé par une autre application',
-    OverconstrainedError:  '⚙️ Contraintes médias non supportées',
-    SecurityError:         '🔐 HTTPS requis pour accéder aux médias',
+    NotFoundError: 'Aucun peripherique audio/video detecte',
+    NotAllowedError: 'Acces refuse - autorisez camera/micro',
+    NotReadableError: 'Peripherique occupe par une autre application',
+    OverconstrainedError: 'Contraintes medias non supportees',
+    SecurityError: 'HTTPS requis pour acceder aux medias',
   };
-  return messages[error.name] || `❌ ${error.message}`;
+  return messages[error?.name] || error?.message || 'Erreur media';
 };
 
 export default useWebRTC;
-
-
-
