@@ -18,10 +18,17 @@ const getIceServers = () => {
       return parsed;
     }
   } catch (err) {
-    console.warn('REACT_APP_ICE_SERVERS invalide, fallback STUN par defaut');
+    debugWarn('REACT_APP_ICE_SERVERS invalide, fallback STUN par defaut');
   }
-
   return DEFAULT_ICE_SERVERS;
+};
+
+const DEBUG_WEBRTC = process.env.NODE_ENV === 'development';
+const debugLog = (...args) => {
+  if (DEBUG_WEBRTC) console.log(...args);
+};
+const debugWarn = (...args) => {
+  if (DEBUG_WEBRTC) console.warn(...args);
 };
 
 const useWebRTC = (socket, roomId, userName, userId = null) => {
@@ -65,7 +72,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
           peer.addTrack(track, localStreamRef.current);
         }
       } catch (err) {
-        console.warn(`⚠️ Impossible d'ajouter la piste ${track.kind}:`, err);
+        debugWarn(`⚠️ Impossible d'ajouter la piste ${track.kind}:`, err);
       }
     });
   }, []);
@@ -92,7 +99,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
       localStreamRef.current = stream;
       setLocalStream(stream);
       setMediaError(null);
-      console.log('📹 Flux local initialisé');
+      debugLog('📹 Flux local initialisé');
       return stream;
 
     } catch (err) {
@@ -111,7 +118,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
         setLocalStream(audioOnly);
         setIsVideoEnabled(false);
         setMediaError('📵 Caméra non disponible — mode audio uniquement');
-        console.warn('⚠️ Fallback audio seulement');
+        debugWarn('⚠️ Fallback audio seulement');
         return audioOnly;
 
       } catch (audioErr) {
@@ -133,7 +140,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
     }
     setRemoteStreams(prev => prev.filter(s => s.peerId !== peerId));
     setParticipants(prev => prev.filter(p => p.sid !== peerId));
-    console.log(`👋 Peer supprimé : ${peerId}`);
+    debugLog(`👋 Peer supprimé : ${peerId}`);
   }, []);
 
   // ============================================================
@@ -146,7 +153,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
       delete peersRef.current[targetId];
     }
 
-    console.log(`🔗 Création peer ${isInitiator ? '(initiateur)' : '(récepteur)'} → ${targetId}`);
+    debugLog(`🔗 Création peer ${isInitiator ? '(initiateur)' : '(récepteur)'} → ${targetId}`);
 
     const peerOptions = {
       initiator: isInitiator,
@@ -171,11 +178,11 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
 
       if (signalData.type === 'offer') {
         socket.emit('webrtc_offer', { targetId, offer: signalData, roomId });
-        console.log(`📤 Offre → ${targetId}`);
+        debugLog(`📤 Offre → ${targetId}`);
 
       } else if (signalData.type === 'answer') {
         socket.emit('webrtc_answer', { targetId, answer: signalData, roomId });
-        console.log(`📤 Réponse → ${targetId}`);
+        debugLog(`📤 Réponse → ${targetId}`);
 
       } else if (signalData.candidate) {
         socket.emit('ice_candidate', { targetId, candidate: signalData, roomId });
@@ -184,7 +191,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
 
     // ── Réception du flux distant ──
     peer.on('stream', (remoteStream) => {
-      console.log(`📡 Flux reçu de ${targetId}`);
+      debugLog(`📡 Flux reçu de ${targetId}`);
       setRemoteStreams(prev => {
         const exists = prev.find(s => s.peerId === targetId);
         if (exists) {
@@ -198,7 +205,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
 
     // ── Connexion établie ──
     peer.on('connect', () => {
-      console.log(`✅ Connexion P2P établie avec ${targetId}`);
+      debugLog(`✅ Connexion P2P établie avec ${targetId}`);
     });
 
     // ── Erreur ──
@@ -209,7 +216,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
 
     // ── Fermeture ──
     peer.on('close', () => {
-      console.log(`🔒 Peer fermé : ${targetId}`);
+      debugLog(`🔒 Peer fermé : ${targetId}`);
       removePeer(targetId);
     });
 
@@ -245,7 +252,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
   // ============================================================
   const joinRoom = useCallback(async () => {
     if (!socket?.connected) {
-      console.warn('⚠️ Socket non connecté');
+      debugWarn('⚠️ Socket non connecté');
       return;
     }
 
@@ -261,7 +268,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
         return;
       }
 
-      console.log(`✅ Salle "${roomId}" rejointe, participants:`, response?.participants);
+      debugLog(`✅ Salle "${roomId}" rejointe, participants:`, response?.participants);
 
       if (response?.participants) {
         const normalized = normalizeParticipants(response.participants);
@@ -271,7 +278,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
         // IMPORTANT: Utiliser participant.sid (socket ID) pour WebRTC
         normalized.forEach((participant) => {
           if (participant.sid !== socket.id) {
-            console.log(`🔗 Création peer avec ${participant.sid} (participant existant)`);
+            debugLog(`🔗 Création peer avec ${participant.sid} (participant existant)`);
             createPeer(participant.sid, true, stream || null);
           }
         });
@@ -308,7 +315,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
     setIsScreenSharing(false);
     setMediaError(null);
 
-    console.log(`🚪 Salle "${roomId}" quittée`);
+    debugLog(`🚪 Salle "${roomId}" quittée`);
   }, [socket, roomId]);
 
   // ============================================================
@@ -333,7 +340,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
         addTrackToPeers(audioTrack);
         ensurePeerConnections(localStreamRef.current);
         setTimeout(() => refreshAllPeerConnections(localStreamRef.current), 200);
-        console.log('🎤 Piste audio ajoutée dynamiquement');
+        debugLog('🎤 Piste audio ajoutée dynamiquement');
       } catch (err) {
         setMediaError(getMediaErrorMessage(err));
         console.error("❌ Impossible d'activer le micro:", err);
@@ -342,7 +349,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
     } else {
       audioTrack.enabled = !audioTrack.enabled;
       setIsAudioEnabled(audioTrack.enabled);
-      console.log(`🎤 Audio : ${audioTrack.enabled ? 'ON' : 'OFF'}`);
+      debugLog(`🎤 Audio : ${audioTrack.enabled ? 'ON' : 'OFF'}`);
     }
 
     socket?.emit('media_state_change', {
@@ -376,7 +383,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
         addTrackToPeers(videoTrack);
         ensurePeerConnections(localStreamRef.current);
         setTimeout(() => refreshAllPeerConnections(localStreamRef.current), 200);
-        console.log('📷 Piste vidéo ajoutée dynamiquement');
+        debugLog('📷 Piste vidéo ajoutée dynamiquement');
       } catch (err) {
         setMediaError(getMediaErrorMessage(err));
         console.error("❌ Impossible d'activer la caméra:", err);
@@ -385,7 +392,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
     } else {
       videoTrack.enabled = !videoTrack.enabled;
       setIsVideoEnabled(videoTrack.enabled);
-      console.log(`📷 Vidéo : ${videoTrack.enabled ? 'ON' : 'OFF'}`);
+      debugLog(`📷 Vidéo : ${videoTrack.enabled ? 'ON' : 'OFF'}`);
     }
 
     socket?.emit('media_state_change', {
@@ -412,7 +419,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
     }
 
     setIsScreenSharing(false);
-    console.log('🖥️ Partage écran arrêté');
+    debugLog('🖥️ Partage écran arrêté');
   }, []);
 
   const toggleScreenShare = useCallback(async () => {
@@ -439,7 +446,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
       // ✅ Utiliser stopScreenShare (pas toggleScreenShare) pour éviter la boucle
       screenTrack.onended = stopScreenShare;
       setIsScreenSharing(true);
-      console.log('🖥️ Partage écran démarré');
+      debugLog('🖥️ Partage écran démarré');
 
     } catch (err) {
       console.error('❌ Erreur partage écran:', err);
@@ -454,32 +461,32 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
 
     // ── Nouveau participant ──
     const onUserJoined = ({ userId, userName: name, participants: p }) => {
-      console.log(`👤 UserJoined reçu: userId=${userId} (type: ${typeof userId}), name=${name}`);
-      console.log(`   Participants dans l'event:`, p);
-      console.log(`   Mon socket.id:`, socket.id);
+      debugLog(`👤 UserJoined reçu: userId=${userId} (type: ${typeof userId}), name=${name}`);
+      debugLog(`   Participants dans l'event:`, p);
+      debugLog(`   Mon socket.id:`, socket.id);
       
       const normalized = normalizeParticipants(p || []);
-      console.log(`   Participants normalisés:`, normalized);
+      debugLog(`   Participants normalisés:`, normalized);
 
       setParticipants(normalized);
 
       // IMPORTANT: Le backend envoie userId = sid (socket ID)
       // Chercher le participant par son sid
       const newParticipant = normalized.find((p) => p.sid === userId);
-      console.log(`   Participant trouvé par sid:`, newParticipant);
+      debugLog(`   Participant trouvé par sid:`, newParticipant);
 
       if (newParticipant && newParticipant.sid !== socket.id) {
-        console.log(`🔗 Création peer avec ${newParticipant.sid} (nouveau participant)`);
+        debugLog(`🔗 Création peer avec ${newParticipant.sid} (nouveau participant)`);
         createPeer(newParticipant.sid, false, localStreamRef.current || null);
         setTimeout(() => ensurePeerConnections(localStreamRef.current || null), 150);
       } else {
-        console.log(`   ⚠️ Pas de nouveau participant à connecter (userId=${userId}, socket.id=${socket.id})`);
+        debugLog(`   ⚠️ Pas de nouveau participant à connecter (userId=${userId}, socket.id=${socket.id})`);
       }
     };
 
     // ── Participant parti ──
     const onUserLeft = ({ userId, participants: p }) => {
-      console.log(`👋 Particiant parti: userId=${userId}`);
+      debugLog(`👋 Particiant parti: userId=${userId}`);
       const normalized = normalizeParticipants(p || []);
       setParticipants(normalized);
 
@@ -489,12 +496,12 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
 
     // ── Offre WebRTC ──
     const onOffer = ({ offer, fromId }) => {
-      console.log(`📥 Offre reçue de ${fromId}`);
-      console.log(`   Mes participants actuels:`, Object.keys(peersRef.current));
+      debugLog(`📥 Offre reçue de ${fromId}`);
+      debugLog(`   Mes participants actuels:`, Object.keys(peersRef.current));
 
       let peer = peersRef.current[fromId];
       if (!peer) {
-        console.log(`   ➕ Création nouveau peer pour l'offre`);
+        debugLog(`   ➕ Création nouveau peer pour l'offre`);
         peer = createPeer(fromId, false, localStreamRef.current || null);
       }
       peer.signal(offer);
@@ -502,12 +509,12 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
 
     // ── Réponse WebRTC ──
     const onAnswer = ({ answer, fromId }) => {
-      console.log(`📥 Réponse reçue de ${fromId}`);
+      debugLog(`📥 Réponse reçue de ${fromId}`);
       const peer = peersRef.current[fromId];
       if (peer) {
         peer.signal(answer);
       } else {
-        console.warn(`   ⚠️ Pas de peer trouvé pour ${fromId}`);
+        debugWarn(`   ⚠️ Pas de peer trouvé pour ${fromId}`);
       }
     };
 
@@ -517,7 +524,7 @@ const useWebRTC = (socket, roomId, userName, userId = null) => {
       if (peer) {
         peer.signal(candidate);
       } else {
-        console.warn(`⚠️ ICE candidate reçu mais pas de peer pour ${fromId}`);
+        debugWarn(`⚠️ ICE candidate reçu mais pas de peer pour ${fromId}`);
       }
     };
 
@@ -599,5 +606,6 @@ const getMediaErrorMessage = (error) => {
 };
 
 export default useWebRTC;
+
 
 

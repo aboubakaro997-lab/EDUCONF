@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 
 // ============================================================
 //  CONSTANTES
@@ -57,6 +57,10 @@ const useChat = (socket, roomId, currentUser) => {
   const typingDebounceRef = useRef(null);   // Anti-rebond frappe
   const isChatOpenRef     = useRef(false);  // Version ref de isChatOpen (pour les closures)
   const inputRef          = useRef(null);   // Ref vers l'input du chat
+  const displayName = useMemo(
+    () => currentUser?.full_name || currentUser?.username || 'Quelqu\'un',
+    [currentUser]
+  );
 
   // Garder isChatOpenRef synchronisé
   useEffect(() => {
@@ -92,7 +96,7 @@ const useChat = (socket, roomId, currentUser) => {
 
   /** Arrêter "est en train d'écrire" */
   const stopTyping = useCallback(() => {
-    if (!socket?.connected) return;
+    if (!socket?.connected || !roomId) return;
 
     if (typingDebounceRef.current) {
       clearTimeout(typingDebounceRef.current);
@@ -110,6 +114,10 @@ const useChat = (socket, roomId, currentUser) => {
   // ============================================================
   const sendMessage = useCallback((text) => {
     if (!text?.trim())         return false;
+    if (!roomId) {
+      setChatError('❌ Salle invalide — message non envoyé');
+      return false;
+    }
     if (!socket?.connected) {
       setChatError('❌ Connexion perdue — message non envoyé');
       return false;
@@ -119,7 +127,7 @@ const useChat = (socket, roomId, currentUser) => {
     const message = {
       id:        generateMessageId(),
       text:      text.trim(),
-      sender:    currentUser?.full_name || currentUser?.username || 'Moi',
+      sender:    displayName,
       senderId:  socket.id,
       roomId,
       timestamp: new Date().toISOString(),
@@ -133,8 +141,6 @@ const useChat = (socket, roomId, currentUser) => {
     scrollToBottom();
 
   // ── Envoyer au serveur ──
-    console.log(`📤 Envoi message: roomId=${roomId}, text=${text.substring(0, 30)}...`);
-    
     socket.emit(
       'chat_message',
       {
@@ -145,10 +151,8 @@ const useChat = (socket, roomId, currentUser) => {
         timestamp: message.timestamp,
       },
       (ack) => {
-        console.log(`📥 Ack chat_message:`, ack);
         // Confirmation du serveur
         if (ack?.error) {
-          console.error(`❌ Erreur serveur: ${ack.error}`);
           setChatError(`❌ Erreur envoi : ${ack.error}`);
           // Marquer le message comme échoué
           setMessages(prev =>
@@ -171,7 +175,7 @@ const useChat = (socket, roomId, currentUser) => {
     stopTyping();
 
     return true;
-  }, [socket, roomId, currentUser, addMessage, scrollToBottom, stopTyping]);
+  }, [socket, roomId, displayName, addMessage, scrollToBottom, stopTyping]);
 
   // ============================================================
   //  4. INDICATEUR DE FRAPPE
@@ -179,7 +183,7 @@ const useChat = (socket, roomId, currentUser) => {
 
   /** Démarrer "est en train d'écrire" */
   const startTyping = useCallback(() => {
-    if (!socket?.connected) return;
+    if (!socket?.connected || !roomId) return;
 
     // Annuler le debounce précédent
     if (typingDebounceRef.current) {
@@ -189,7 +193,7 @@ const useChat = (socket, roomId, currentUser) => {
     // Envoyer l'événement de frappe
     socket.emit('typing_start', {
       roomId,
-      userName: currentUser?.username || currentUser || 'Quelqu\'un',
+      userName: displayName,
       userId:   socket.id,
     });
 
@@ -198,7 +202,7 @@ const useChat = (socket, roomId, currentUser) => {
       stopTyping();
     }, TYPING_TIMEOUT_MS);
 
-  }, [socket, roomId, currentUser, stopTyping]);
+  }, [socket, roomId, displayName, stopTyping]);
 
   /**
    * Gestionnaire de frappe à brancher sur l'input
@@ -359,7 +363,6 @@ const useChat = (socket, roomId, currentUser) => {
 
         setMessages(history);
         scrollToBottom(false);
-        console.log(`📜 Historique chargé : ${history.length} message(s)`);
       }
     });
   }, [socket, roomId, scrollToBottom]);
@@ -412,38 +415,11 @@ const useChat = (socket, roomId, currentUser) => {
       setMessages(prev => prev.filter(m => m.id !== messageId));
     };
 
-    // ── Message système (participant rejoint / parti) ──
-    const onSystemMessage = ({ text }) => {
-      const sysMsg = {
-        id:        generateMessageId(),
-        text,
-        sender:    'Système',
-        senderId:  'system',
-        timestamp: new Date().toISOString(),
-        isLocal:   false,
-        status:    'delivered',
-        type:      'system',
-      };
-      addMessage(sysMsg);
-      scrollToBottom();
-    };
-
-    // ── Confirmation livraison ──
-    const onMessageDelivered = ({ messageId }) => {
-      setMessages(prev =>
-        prev.map(m =>
-          m.id === messageId ? { ...m, status: 'delivered' } : m
-        )
-      );
-    };
-
     // ── Abonnements ──
     socket.on('chat_message',       onChatMessage);
     socket.on('typing_start',       onTypingStart);
     socket.on('typing_stop',        onTypingStop);
     socket.on('message_deleted',    onMessageDeleted);
-    socket.on('system_message',     onSystemMessage);
-    socket.on('message_delivered',  onMessageDelivered);
 
     // ── Charger l'historique à la connexion ──
     loadHistory();
@@ -454,8 +430,6 @@ const useChat = (socket, roomId, currentUser) => {
       socket.off('typing_start',       onTypingStart);
       socket.off('typing_stop',        onTypingStop);
       socket.off('message_deleted',    onMessageDeleted);
-      socket.off('system_message',     onSystemMessage);
-      socket.off('message_delivered',  onMessageDelivered);
     };
 
   }, [socket, addMessage, addTypingUser, removeTypingUser, scrollToBottom, loadHistory]);
