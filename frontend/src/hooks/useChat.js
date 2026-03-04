@@ -132,7 +132,9 @@ const useChat = (socket, roomId, currentUser) => {
     addMessage(message);
     scrollToBottom();
 
-    // ── Envoyer au serveur ──
+  // ── Envoyer au serveur ──
+    console.log(`📤 Envoi message: roomId=${roomId}, text=${text.substring(0, 30)}...`);
+    
     socket.emit(
       'chat_message',
       {
@@ -143,8 +145,10 @@ const useChat = (socket, roomId, currentUser) => {
         timestamp: message.timestamp,
       },
       (ack) => {
+        console.log(`📥 Ack chat_message:`, ack);
         // Confirmation du serveur
         if (ack?.error) {
+          console.error(`❌ Erreur serveur: ${ack.error}`);
           setChatError(`❌ Erreur envoi : ${ack.error}`);
           // Marquer le message comme échoué
           setMessages(prev =>

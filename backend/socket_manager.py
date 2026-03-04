@@ -417,18 +417,35 @@ async def ice_candidate(sid, data):
 
 @sio.event
 async def chat_message(sid, data):
-    room_id_int = _resolve_room_id(data.get("roomId"))
+    room_id_raw = data.get("roomId")
     message = data.get("message")
     user_name = data.get("userName", "Anonyme")
     message_id = data.get("messageId")
     timestamp = data.get("timestamp") or datetime.now().isoformat()
 
+    print(f"💬 chat_message: sid={sid}, room_id_raw={room_id_raw}, message={message[:50] if message else None}...")
+    print(f"   rooms_data keys: {list(rooms_data.keys())}")
+    print(f"   Is sid in any room: ", end="")
+    for rid, participants in rooms_data.items():
+        if sid in participants:
+            print(f"YES (room={rid})")
+            break
+    else:
+        print("NO")
+
+    room_id_int = _resolve_room_id(room_id_raw)
     if room_id_int is None or not message:
+        print(f"   ❌ room_id_int is None or message is empty")
         return {"error": "Message invalide"}
     room_id = str(room_id_int)
+    print(f"   room_id_int={room_id_int}, room_id={room_id}")
 
     if not _is_sid_in_room(sid, room_id):
+        print(f"   ❌ sid={sid} NOT in room {room_id}")
+        print(f"   room {room_id} participants: {list(rooms_data.get(room_id, {}).keys()) if room_id in rooms_data else 'ROOM NOT FOUND'}")
         return {"error": "Acces refuse a cette salle"}
+
+    print(f"   ✅ User in room, processing message")
 
     payload = {
         "messageId": message_id or f"{int(datetime.now().timestamp() * 1000)}-{sid[:6]}",
@@ -446,6 +463,7 @@ async def chat_message(sid, data):
         chat_history[room_id] = chat_history[room_id][-MAX_HISTORY:]
 
     await sio.emit("chat_message", payload, room=room_id)
+    print(f"   ✅ Message emitted to room")
     return {"success": True, "messageId": payload["messageId"]}
 
 
@@ -505,13 +523,21 @@ async def typing_stop(sid, data):
 
 @sio.event
 async def get_chat_history(sid, data):
-    room_id_int = _resolve_room_id(data.get("roomId"))
+    room_id_raw = data.get("roomId")
+    print(f"📜 get_chat_history: sid={sid}, room_id_raw={room_id_raw}")
+    
+    room_id_int = _resolve_room_id(room_id_raw)
     if room_id_int is None:
+        print(f"   ❌ room_id_int is None")
         return {"error": "roomId requis"}
     room_id = str(room_id_int)
+    print(f"   room_id={room_id}, is_in_room={_is_sid_in_room(sid, room_id)}")
+    
     if not _is_sid_in_room(sid, room_id):
+        print(f"   ❌ Access denied - sid not in room")
         return {"error": "Acces refuse a cette salle"}
 
+    print(f"   ✅ Returning {len(chat_history.get(room_id, []))} messages")
     return {"messages": chat_history.get(room_id, [])}
 
 
