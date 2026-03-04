@@ -80,8 +80,14 @@ class Settings(BaseSettings):
         if not self.allowed_origins:
             raise ValueError("ALLOWED_ORIGINS must be set in production")
 
-        if not self.LIVEKIT_API_KEY or not self.LIVEKIT_API_SECRET:
-            raise ValueError("LIVEKIT_API_KEY and LIVEKIT_API_SECRET must be set in production")
+        # SFU optionnel: autorise un démarrage en mode dégradé si LiveKit n'est pas configuré.
+        # En revanche, une configuration partielle est refusée.
+        has_livekit_key = bool((self.LIVEKIT_API_KEY or "").strip())
+        has_livekit_secret = bool((self.LIVEKIT_API_SECRET or "").strip())
+        if has_livekit_key != has_livekit_secret:
+            raise ValueError(
+                "LIVEKIT_API_KEY and LIVEKIT_API_SECRET must be both set (or both empty)"
+            )
 
 
 settings = Settings()
